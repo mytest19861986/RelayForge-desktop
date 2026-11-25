@@ -82,5 +82,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"3.0.0","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"3.0.1","source_state":self.collector.state,"engine_running":self.active})
         return result

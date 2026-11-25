@@ -6,7 +6,7 @@
 
 - این ZIP شامل **سورس کامل قابل اجرا**، داشبورد، ابزار ساخت EXE با Nuitka و آزمون‌ها است.
 - کد FastAPI، صف‌های ارسال، ذخیره پیشرفت، BotFather realtime polling و اتصال Telethon پیاده‌سازی شده‌اند؛ آزمون محلی بدون توکن واقعی اجرا شده است.
-- **در محیط تولید فعلی که لینوکس است، فایل واقعی Windows `.exe` کامپایل نشده و نباید وانمود شود آماده است.** برای ساخت فایل EXE واقعی باید `BUILD_EXE_WINDOWS.bat` را روی Windows Server 2019/Windows 10/11 اجرا کنید یا workflow موجود در مخزن خصوصی خودتان را با Windows runner اجرا کنید. در پایان `RelayForge_v3.0.0_WINDOWS_EXE.zip` واقعاً تولید می‌شود.
+- **در محیط تولید فعلی که لینوکس است، فایل واقعی Windows `.exe` کامپایل نشده و نباید وانمود شود آماده است.** برای ساخت فایل EXE واقعی باید `BUILD_EXE_WINDOWS.bat` را روی Windows Server 2019/Windows 10/11 اجرا کنید یا workflow موجود در مخزن خصوصی خودتان را با Windows runner اجرا کنید. در پایان `RelayForge_v3.0.1_WINDOWS_EXE.zip` واقعاً تولید می‌شود.
 - Nuitka کد پایتون را به باینری native کامپایل می‌کند و فایل‌های `.py` در ZIP اجرایی قرار نمی‌گیرند، ولی EXE هرگز غیرقابل مهندسی معکوس نیست. کد فرانت‌اند HTML/CSS/JS برای مرورگر قابل مشاهده است؛ کلیدهای API داخل آن hardcode نشده‌اند.
 - **اتصال واقعی به Telegram/Bale/Rubika/Eitaa/Soroush روی حساب‌های شما هنوز تست نشده**، بنابراین برای استفاده عملی ابتدا کانال‌های آزمایشی را بررسی کنید. Endpoint سروش با توجه به منابع غیررسمی/جامعه توسعه‌دهندگان است و **تأیید رسمی end-to-end نشده**.
 
@@ -51,7 +51,7 @@ py -3.12 -m venv .venv
 **روش الف: روی خود VPS یا ویندوز دیگر**
 
 - از پوشه سورس، `BUILD_EXE_WINDOWS.bat` را با دسترسی معمولی اجرا کنید.
-- اسکریپت Python venv/Requirements را نصب، ۵۰ آزمون پایه را اجرا، Nuitka را با `--mode=onefile` به‌کار می‌گیرد و در صورت موفقیت فایل `build_output\RelayForge.exe` و ZIP `RelayForge_v3.0.0_WINDOWS_EXE.zip` را می‌سازد.
+- اسکریپت Python venv/Requirements را نصب، ۵۰ آزمون پایه را اجرا، Nuitka را با `--mode=onefile` به‌کار می‌گیرد و در صورت موفقیت فایل `build_output\RelayForge.exe` و ZIP `RelayForge_v3.0.1_WINDOWS_EXE.zip` را می‌سازد.
 - **تنها ZIP اجرایی ساخته‌شده** را به شخص ثالث بدهید. پوشه سورس و فایل‌های `data` را منتشر نکنید.
 
 **روش ب: با GitHub Actions در مخزن PRIVATE**

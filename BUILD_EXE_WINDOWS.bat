@@ -50,13 +50,13 @@ copy /y "START_SERVER.bat" "release_runtime\START_SERVER.bat" >nul
 copy /y "OPEN_DASHBOARD.bat" "release_runtime\OPEN_DASHBOARD.bat" >nul
 copy /y "INSTALL_AUTO_START.ps1" "release_runtime\INSTALL_AUTO_START.ps1" >nul
 copy /y "docs\RUNTIME_README_FA.md" "release_runtime\README_FA.md" >nul
-if exist "RelayForge_v3.0.0_WINDOWS_EXE.zip" del /q "RelayForge_v3.0.0_WINDOWS_EXE.zip"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath 'release_runtime\RelayForge.exe','release_runtime\START_SERVER.bat','release_runtime\OPEN_DASHBOARD.bat','release_runtime\INSTALL_AUTO_START.ps1','release_runtime\README_FA.md' -DestinationPath 'RelayForge_v3.0.0_WINDOWS_EXE.zip' -Force"
+if exist "RelayForge_v3.0.1_WINDOWS_EXE.zip" del /q "RelayForge_v3.0.1_WINDOWS_EXE.zip"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath 'release_runtime\RelayForge.exe','release_runtime\START_SERVER.bat','release_runtime\OPEN_DASHBOARD.bat','release_runtime\INSTALL_AUTO_START.ps1','release_runtime\README_FA.md' -DestinationPath 'RelayForge_v3.0.1_WINDOWS_EXE.zip' -Force"
 if errorlevel 1 goto error
 
 echo.
 echo [SUCCESS] build_output\RelayForge.exe
-echo [SUCCESS] RelayForge_v3.0.0_WINDOWS_EXE.zip
+echo [SUCCESS] RelayForge_v3.0.1_WINDOWS_EXE.zip
 if not defined CI pause
 exit /b 0
 

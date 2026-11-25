@@ -1,4 +1,4 @@
-RelayForge Studio 3.0.0
+RelayForge Studio 3.0.1
 Python 3.12 / FastAPI / Telethon / HTTPX / SQLite / Nuitka
 Source verification: 50 local tests passed
 Windows EXE: not built in Linux runtime

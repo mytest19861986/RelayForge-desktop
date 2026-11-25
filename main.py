@@ -109,7 +109,7 @@ def create_app(data_root:Path|None=None, start_workers=True) -> FastAPI:
         yield
         if start_workers:await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="3.0.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="3.0.1",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -201,7 +201,7 @@ def create_app(data_root:Path|None=None, start_workers=True) -> FastAPI:
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"3.0.0"}
+    async def health():return {"status":"running","version":"3.0.1"}
 
     return app
 

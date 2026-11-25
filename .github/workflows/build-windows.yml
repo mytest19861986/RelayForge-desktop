@@ -1,26 +1,22 @@
-name: Compile Windows EXE (private repository recommended)
+name: Desktop Windows EXE
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - 'v*'
+permissions:
+  contents: read
 jobs:
   windows:
     runs-on: windows-2022
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          architecture: 'x64'
-      - name: Build native binary and runtime ZIP
+          architecture: x64
+      - name: Build and smoke test
         shell: cmd
         run: BUILD_EXE_WINDOWS.bat
-      - name: Upload Windows standalone ZIP (no Python sources)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: RelayForge-v4.3.0-Windows-EXE
-          path: RelayForge_v4.3.0_WINDOWS_EXE.zip
+          name: RelayForge-Windows-EXE
+          path: RelayForge_v*_WINDOWS_EXE.zip
           if-no-files-found: error

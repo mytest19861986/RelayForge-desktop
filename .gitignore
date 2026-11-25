@@ -20,3 +20,16 @@ backups/
 secrets.key
 dashboard-key.txt
 *_WINDOWS_EXE.zip
+
+# Local secrets / artifacts
+.env
+.env.*
+!.env.example
+*.log
+*.pem
+*.key
+*.rfbackup
+*.sqlite*
+*.db
+*.zip
+.venv*/

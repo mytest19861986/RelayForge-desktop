@@ -1,4 +1,6 @@
-# RelayForge Desktop 4.3.7 — Style Intelligence Studio
+# RelayForge Desktop 4.3.8 — Quick Test
+
+اجرای یک‌مرحله‌ای: RUN_FROM_SOURCE_WINDOWS.bat یا RelayForge.exe. بدون ورود دستی، انتخاب پروژه یا پورت. پورت پیش‌فرض 8765 و پوشه data؛ برای بازکردن مجدد پنل OPEN_DASHBOARD.bat. جزئیات: RELEASE_438_FA.md.
 
 راهنمای جدید: [RELEASE_437_FA.md](RELEASE_437_FA.md)؛ مطالب زیر راهنمای تاریخی تنظیمات قبلی هستند.
 

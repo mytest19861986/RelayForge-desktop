@@ -7,7 +7,12 @@ const PLATFORMS = [
   {id:'eitaa',name:'ایتا',symbol:'✳',sub:'EitaaYar API',color:'#ffc58a',bg:'#4b362d'},
   {id:'soroush',name:'سروش‌پلاس',symbol:'⌘',sub:'Soroush+ Bot API',color:'#a6baff',bg:'#333c59'}
 ];
-let accessKey=sessionStorage.getItem('relayforge-key')||'', activePage='overview', status=null, initial=false, selectedMode='bot', tick=null;
+function startupKey(){
+ const fragment=new URLSearchParams(location.hash.slice(1));
+ if(fragment.has('rf-key')){const key=fragment.get('rf-key')||'';history.replaceState(null,'',location.pathname+location.search);if(key){sessionStorage.setItem('relayforge-key',key);return key}}
+ return sessionStorage.getItem('relayforge-key')||'';
+}
+let accessKey=startupKey(), activePage='overview', status=null, initial=false, selectedMode='bot', tick=null;
 const number = value => Number(value||0).toLocaleString('fa-IR');
 const when = value => value?new Date(value*1000).toLocaleString('fa-IR',{hour:'2-digit',minute:'2-digit',month:'short',day:'numeric'}):'—';
 let toastTimer;
@@ -19,7 +24,7 @@ async function api(path, method='GET',data){const headers={'X-Studio-Key':access
  // Origin is automatically set by the browser for same-origin POST; never try to assign a forbidden header.
  delete options.headers.Origin;
  let response=await fetch('/api/'+path,options);let output;try{output=await response.json()}catch{throw new Error('پاسخ سرور قابل خواندن نیست')}
- if(!response.ok)throw new Error(typeof output.detail==='string'?output.detail:'درخواست ناموفق بود');return output;
+ if(!response.ok){const error=new Error(typeof output.detail==='string'?output.detail:'درخواست ناموفق بود');error.status=response.status;throw error}return output;
 }
 function renderPage(page,autoReport=true){activePage=page;document.querySelectorAll('.nav-link').forEach(b=>b.classList.toggle('active',b.dataset.page===page));document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active',p.id===page));const names={overview:'نمای کلی',source:'مبدأ تلگرام',targets:'مقصدها و APIها',activity:'لاگ و گزارش‌ها',guide:'راهنما',operations:'عملیات و پشتیبان',rich:'قالب‌بندی پیام‌ها',ai:'استودیو هوش مصنوعی'};$('breadcrumb').textContent=names[page]||'—';window.scrollTo({top:0,behavior:'smooth'});if(page==='targets'&&status)renderTargets(status.targets);if(page==='activity'&&status&&autoReport)loadReports(true);if(page==='operations'&&accessKey){loadBackups();loadUncertain()}if(page==='rich'&&accessKey)loadRich();if(page==='ai'&&accessKey)loadAI()}
 function chooseMode(mode){selectedMode=mode;$('mode-user').classList.toggle('active',mode==='user');$('mode-bot').classList.toggle('active',mode==='bot');$('user-fields').classList.toggle('hidden',mode!=='user');$('bot-fields').classList.toggle('hidden',mode!=='bot');$('login-panel').classList.toggle('hidden',mode!=='user');$('source-history').disabled=false;$('upgrade-archive').disabled=mode!=='user'}
@@ -68,7 +73,7 @@ function renderStatus(state,force=false){status=state;$('engine-state').textCont
  if(activePage==='activity'&&(force||(reportOffsets.events===0&&reportOffsets.deliveries===0)))loadReports(force);
  if(activePage==='targets' && force)renderTargets(state.targets);updateTargetLive(state)
 }
-async function refresh(force=false){if(!accessKey)return;try{let data=await api('status');renderStatus(data,force);$('login-overlay').classList.add('hidden')}catch(ex){if(ex.message.includes('کلید')||ex.message.includes('نامعتبر')){$('login-overlay').classList.remove('hidden');accessKey='';sessionStorage.removeItem('relayforge-key')}else{notify(ex.message,true);$('connect-badge').textContent='● قطع ارتباط'}}}
+async function refresh(force=false){if(!accessKey){$('login-overlay').classList.remove('hidden');return}try{let data=await api('status');renderStatus(data,force);$('login-overlay').classList.add('hidden')}catch(ex){if(ex.status===401){$('login-overlay').classList.remove('hidden');accessKey='';sessionStorage.removeItem('relayforge-key')}else{notify(ex.message,true);$('connect-badge').textContent='● قطع ارتباط'}}}
 function formData(){return {mode:selectedMode,channel:$('source-channel').value.trim(),api_id:$('source-api-id').value.trim(),api_hash:$('source-api-hash').value.trim(),phone:$('source-phone').value.trim(),bot_token:$('source-bot-token').value.trim(),start_id:Number($('source-start').value||1),end_id:$('source-end').value?Number($('source-end').value):null,poll_seconds:Number($('source-poll').value),max_media_mb:Number($('source-media').value),history_enabled:$('source-history').checked,realtime_enabled:$('source-realtime').checked,filter_enabled:$('filter-enabled').checked,keywords:splitTerms($('filter-words').value),hashtags:splitTerms($('filter-tags').value),exclude_words:splitTerms($('filter-exclude').value),filter_match:$('filter-match').value,prefix:$('source-prefix').value,suffix:$('source-suffix').value,upgrade_archive:$('upgrade-archive').checked}}
 function splitTerms(value){return value.split(/[,،\n]/).map(s=>s.trim()).filter(Boolean)}
 function init(){
@@ -89,10 +94,9 @@ document.querySelectorAll('[data-page]').forEach(btn=>btn.addEventListener('clic
  $('request-code').onclick=async()=>{try{const v=await api('source/request-code','POST',{});notify(v.message)}catch(ex){notify(ex.message,true)}};
  $('verify-code').onclick=async()=>{try{const v=await api('source/verify','POST',{code:$('login-code').value,password:$('login-password').value});$('login-code').value='';$('login-password').value='';notify(v.message)}catch(ex){notify(ex.message,true)}};
  $('check-account').onclick=async()=>{try{const v=await api('source/auth');$('auth-state').textContent=v.authorized?'حساب تلگرام وارد شده و آماده دریافت است':'حساب هنوز وارد نشده است'}catch(ex){notify(ex.message,true)}};
- $('login-button').onclick=login;$('admin-key').addEventListener('keydown',event=>{if(event.key==='Enter')login()});if(accessKey)refresh();
+ refresh();
  tick=setInterval(()=>{if(accessKey)refresh();$('clock').textContent=new Date().toLocaleString('fa-IR',{hour:'2-digit',minute:'2-digit',year:'numeric',month:'short',day:'numeric'})},3000);
 }
-async function login(){accessKey=$('admin-key').value.trim();if(!accessKey){$('login-error').textContent='کلید ورود را وارد کن';return}try{await api('status');sessionStorage.setItem('relayforge-key',accessKey);$('login-error').textContent='';$('admin-key').value='';await refresh(true)}catch(ex){$('login-error').textContent='کلید نامعتبر است یا سرویس در دسترس نیست';accessKey='';sessionStorage.removeItem('relayforge-key')}}
 window.addEventListener('DOMContentLoaded',init);
 function showChannels(root,channels,select,note){let existing=root.querySelector('.discovered-channels');if(existing)existing.remove();const area=make('div','discovered-channels');area.append(make('p','hint',channels.length?'کانال صحیح را انتخاب کنید؛ مجوز ارسال با تست واقعی مشخص می‌شود':note||'کانالی یافت نشد'));for(const c of channels){const b=make('button','secondary-button',(c.title||'کانال')+' · '+c.chat_id);b.onclick=()=>select(c.chat_id);area.append(b)}root.append(area)}
 function downloadBlob(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}

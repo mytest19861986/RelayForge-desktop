@@ -1,7 +1,8 @@
-# Test report 4.3.7
-- Base: delivered 4.3.6 archive. Existing 203 tests retained; expected version assertions updated.
-- 217 passed (14 additional cases) on local Linux/Python; `python -m pytest -q`.
-- `node --check web/main.js` passed.
-- Real local HTTP smoke: `python smoke_runtime.py python main.py` passed; verifies version, assets, authentication and offline AI/rich-text previews.
-- New tests: sampling/deduplication, source reference validation, local metrics and 90/30 partition, profile file persistence/edit, invalid path, consent, bounded mocked AI input, authenticated routes.
-- Not certified: live Telegram history (Telethon unavailable here), live Gemini, full browser click-through, Windows build, source-side media licenses. No actual message sent.
+# گزارش آزمون RelayForge 4.3.8
+
+- 219 تست pytest موفق (شامل دو آزمون جدید راه‌اندازی سریع و حفظ امنیت).
+- HTTP smoke روی پردازش واقعی: موفق؛ وضعیت نسخه، رد دسترسی بدون کلید، API مجاز، قالب‌بندی و AI محلی.
+- بررسی syntax جاوااسکریپت و آزمون تابع startupKey با Node.js: موفق (decode، حذف fragment، حفظ نشست و عدم نشست).
+- آزمون تمام‌مسیر Chromium به علت ERR_BLOCKED_BY_ADMINISTRATOR در محیط مرورگر محدود شد؛ نتیجه UI واقعی تأیید نشده است.
+- بسته سورس کامل؛ ساخت EXE و تست واقعی ویندوز، PowerShell، تلگرام و Gemini انجام نشده است.
+- هیچ اطلاعات کاربر یا کلید واقعی داخل بسته نیست.

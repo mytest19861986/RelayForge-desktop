@@ -1,4 +1,4 @@
-"""RelayForge 4.3.7 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.8 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -6,6 +6,7 @@ from relayforge.splus_user import is_user, marker
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 from fastapi import FastAPI, Request, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +27,9 @@ def runtime_root() -> Path:
     if getattr(sys,"frozen",False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parent
+
+def dashboard_url(port:int, key:str) -> str:
+    return f"http://127.0.0.1:{port}/#rf-key={quote(key, safe='')}"
 
 def web_root() -> Path:
     return Path(__file__).resolve().parent/"web"
@@ -106,7 +110,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.7",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.8",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -292,7 +296,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.7",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.8",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -773,7 +777,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.7"}
+    async def health():return {"status":"running","version":"4.3.8"}
 
     return app
 
@@ -800,21 +804,21 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.7"); return
+        print("SELF TEST OK 4.3.8"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.7")
+            backups.pre_upgrade(data,"4.3.8")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.7")
-            print(f"RelayForge 4.3.7 | http://127.0.0.1:{opt.port}",flush=True)
-            print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
+            backups.mark_version(data,"4.3.8")
+            print(f"RelayForge 4.3.8 | http://127.0.0.1:{opt.port}",flush=True)
+            print("Dashboard opens automatically; use OPEN_DASHBOARD.bat if needed.",flush=True)
             import threading
             if not opt.no_browser and stop is None:
-                threading.Timer(2.2,lambda:webbrowser.open(f"http://127.0.0.1:{opt.port}")).start()
+                threading.Timer(2.2,lambda:webbrowser.open(dashboard_url(opt.port,app.state.service.admin_key))).start()
             server=uvicorn.Server(uvicorn.Config(app,host="127.0.0.1",port=opt.port,workers=1,access_log=False,log_level="warning",timeout_graceful_shutdown=10))
             if stop is not None:
                 def watcher():

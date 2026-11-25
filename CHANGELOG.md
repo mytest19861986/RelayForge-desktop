@@ -2,6 +2,14 @@
 
 Historical snapshot imports, not original commit history.
 
+## 4.3.8
+
+- Simplify local test startup: remove manual dashboard login and project/port prompts.
+- Retain API authentication, local-only binding and origin checks; auto-pass the key in a URL fragment and clear it in the browser.
+- Default port 8765 and data folder; CLI multi-project options retained.
+- Local source validation: 219 pytest tests, HTTP smoke and JavaScript startup checks passed. Browser/Windows/live providers pending.
+- Delivered source ZIP SHA-256: `c097c1a24dbbf72e80e7c31f0347d97772112d8cfc52c6b848bb706c82b1e674`.
+
 ## 4.3.7
 
 - Simplify AI Studio into five tabs.

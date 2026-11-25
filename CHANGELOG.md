@@ -2,6 +2,29 @@
 
 Historical snapshot imports, not original commit history.
 
+## 4.3.7
+
+- Simplify AI Studio into five tabs.
+- Learn reusable channel style profiles from authorized samples, with optional Gemini semantic enrichment.
+- Edit/export style JSON, select styles, and connect content drafts to media/podcast tools.
+- Local regression: 217 tests passed; live provider and Windows acceptance pending.
+
+## 4.3.6
+
+- Add smart model routing, diagnostics, media generation and independent project launch.
+
+## 4.3.5
+
+- Add bounded retry handling for Gemini 503 errors.
+
+## 4.3.4
+
+- Add provider API settings and online model discovery.
+
+## 4.3.3
+
+- Integrate the Eitaa relay diagnostics candidate; retain the fix branch history.
+
 ## 4.3.2
 
 - import lowercase HTML parse mode.

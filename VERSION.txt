@@ -1,4 +1,2 @@
-RelayForge Studio 3.0.2
-Python 3.12/3.13 / FastAPI / Telethon / HTTPX / SQLite / Nuitka
-Patch: pytest Windows temp cleanup isolation via --basetemp
-Windows EXE: pending actual Windows compilation
+4.0.0
+Release candidate; Windows build and live provider acceptance pending.

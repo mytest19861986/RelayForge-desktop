@@ -1,8 +1,8 @@
 """Fail-isolated asynchronous delivery workers and source collector."""
 from __future__ import annotations
 import asyncio, logging
-from .database import Database, PLATFORMS
-from .gateways import Post, send, Rejected, Uncertain, NotSupported
+from .database import Database, PLATFORMS, provider
+from .gateways import Post, send, Rejected, Uncertain, NotSupported, RetryLater, copy_telegram, check_target
 from .source import Collector, SourceUnavailable
 
 log=logging.getLogger("relayforge.engine")
@@ -13,18 +13,31 @@ class Engine:
         self.collector=Collector(db)
         self.active=False
         self.tasks=[]
+        self.workers={}
+        self.route_cache={}
 
     def start(self):
         if self.active: return
         self.active=True
         self.tasks=[asyncio.create_task(self._source_loop(),name="relay-source")]
-        self.tasks.extend(asyncio.create_task(self._target_loop(p),name="relay-"+p) for p in PLATFORMS)
+        self.tasks.append(asyncio.create_task(self._supervise(),name="relay-supervisor"))
 
     async def stop(self):
         self.active=False
         for t in self.tasks:t.cancel()
         await asyncio.gather(*self.tasks,return_exceptions=True)
+        for t in self.workers.values(): t.cancel()
+        await asyncio.gather(*self.workers.values(),return_exceptions=True)
+        self.workers.clear()
+        self.db.recover()
         await self.collector.shutdown()
+
+    async def _supervise(self):
+        while self.active:
+            for t in self.db.targets():
+                p=t["platform"]
+                if p not in self.workers or self.workers[p].done(): self.workers[p]=asyncio.create_task(self._target_loop(p))
+            await asyncio.sleep(1)
 
     async def _source_loop(self):
         while self.active:
@@ -32,9 +45,9 @@ class Engine:
                 await self.collector.tick()
             except asyncio.CancelledError: raise
             except Exception:
-                log.exception("Telegram source loop encountered an error")
+                log.warning("Telegram source loop encountered an error")
                 self.db.event("WARN","source","خطای موقت در گردآوری؛ بدون حذف پیشرفت، تلاش دوباره")
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
 
     async def _target_loop(self,platform):
         while self.active:
@@ -47,26 +60,39 @@ class Engine:
                     await asyncio.sleep(1.2)
             except asyncio.CancelledError: raise
             except Exception:
-                log.exception("Destination worker crashed: %s", platform)
+                log.warning("Destination worker crashed: %s", platform)
                 # Only this destination's in-flight attempt is affected.
                 # Never mark another worker's live send uncertain.
                 if job:
                     try:self.db.finish_delivery(job["id"],platform,"uncertain",detail="خطای داخلی کارگر پس از شروع ارسال")
                     except Exception:pass
-                await asyncio.sleep(6)
+                await asyncio.sleep(30)
 
     async def _deliver(self,platform,job):
         did=job["id"]
         interval=job["interval_seconds"]
         try:
             if job["protected"]: raise Rejected("محتوای محافظت‌شده منتشر نمی‌شود")
-            path=await self.collector.get_media(job)
-            remote=await send(platform,job["token"],job["chat_id"],Post(job["body"],job["media_kind"],path))
-        except SourceUnavailable as exc:
-            if job["tries"] >= 2:
-                self.db.finish_delivery(did,platform,"failed",detail="دریافت محتوای مبدأ پس از چند تلاش ناموفق بود",interval=interval)
+            if job["media_kind"]=="copy":
+                if provider(platform)!="telegram": raise NotSupported("آرشیو BotFather فقط تلگرام")
+                remote=await copy_telegram(job["token"],job["media_ref"],job["chat_id"],job["msg_id"])
             else:
-                self.db.defer_delivery(did,platform,45,"دریافت رسانه از تلگرام موقتاً ناموفق بود")
+                peer=self.db.get_setting("source_peer")
+                if provider(platform)=="telegram" and peer:
+                    key=(platform,job["token"],job["chat_id"],peer)
+                    if key not in self.route_cache:
+                        try: info=await check_target("telegram",job["token"],job["chat_id"])
+                        except Uncertain: raise RetryLater(30) from None
+                        if info["chat_id"]==str(peer): raise Rejected("کانال مقصد همان مبدأ است")
+                        self.route_cache={k:v for k,v in self.route_cache.items() if k[0]!=platform}
+                        self.route_cache[key]=True
+                path=await self.collector.get_media(job)
+                remote=await send(provider(platform),job["token"],job["chat_id"],Post(job["body"],job["media_kind"],path))
+        except RetryLater as exc:
+            self.db.defer_delivery(did,platform,exc.delay,"اتصال موقت یا محدودیت نرخ؛ تلاش مجدد امن")
+            return
+        except SourceUnavailable:
+            self.db.defer_delivery(did,platform,30,"دریافت رسانه از تلگرام ناموفق؛ بررسی مبدأ در صورت تکرار")
             return
         except (Rejected,NotSupported) as exc:
             self.db.finish_delivery(did,platform,"failed",detail=str(exc),interval=interval)
@@ -75,12 +101,12 @@ class Engine:
             self.db.finish_delivery(did,platform,"uncertain",detail=str(exc),interval=interval)
             return
         except Exception:
-            log.exception("Unexpected error in delivery %s", did)
+            log.warning("Unexpected error in delivery %s", did)
             self.db.finish_delivery(did,platform,"uncertain",detail="خطای غیرمنتظره بعد از شروع ارسال؛ بررسی مقصد لازم است",interval=interval)
             return
         self.db.finish_delivery(did,platform,"sent",remote_id=str(remote),interval=interval)
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"3.0.2","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.0.0","source_state":self.collector.state,"engine_running":self.active})
         return result

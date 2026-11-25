@@ -1,15 +1,28 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title RelayForge v3.0.2 - Python 3.12 Windows EXE Builder
+if errorlevel 1 exit /b 1
+title RelayForge v4.0.0 - Python 3.12 Windows EXE Builder
 color 0B
 
 echo =========================================================
-echo   RelayForge 3.0.2 - WINDOWS EXE BUILD [Python 3.12]
+echo   RelayForge 4.0.0 - FULL BUILD R2 [Python 3.12]
 echo =========================================================
 echo.
 echo [INFO] This build uses a separate .venv-build312 environment.
 echo [INFO] Your existing .venv, data, config and sessions are preserved.
+echo.
+
+rem Fail early on partial extraction, before creating any environment.
+echo [PREFLIGHT] Checking the complete source package...
+for %%F in (requirements.txt requirements-dev.txt main.py pytest.ini smoke_runtime.py relayforge\__init__.py relayforge\database.py relayforge\engine.py relayforge\gateways.py relayforge\source.py relayforge\windows_service.py web\index.html web\main.css web\main.js tests\test_relayforge.py tests\test_v4.py START_SERVER.bat OPEN_DASHBOARD.bat START_PROJECT.bat INSTALL_AUTO_START.ps1 INSTALL_SERVICE_WINDOWS.ps1 docs\RUNTIME_README_FA.md) do (
+    if not exist "%%F" (
+        echo [ERROR] Missing required file: %%F
+        echo [ACTION] Extract the COMPLETE ZIP to a new folder. Do not run a patch alone.
+        goto error
+    )
+)
+echo [OK] Required source files are present.
 echo.
 
 rem Prefer Python Launcher (allows side-by-side 3.12 and 3.13).
@@ -48,7 +61,7 @@ if errorlevel 1 (
 echo [DEPS] Installing source, test, and build dependencies...
 "%BUILD_PY%" -m pip install --upgrade pip
 if errorlevel 1 goto error
-"%BUILD_PY%" -m pip install -r requirements-dev.txt
+"%BUILD_PY%" -m pip install -r "%CD%\requirements-dev.txt"
 if errorlevel 1 goto error
 
 echo.
@@ -62,16 +75,25 @@ if errorlevel 1 (
 if exist "%RF_PYTEST_TEMP%" rmdir /s /q "%RF_PYTEST_TEMP%" >nul 2>&1
 
 echo.
-echo [BUILD] Compiling with Nuitka and MinGW64 on Python 3.12...
-"%BUILD_PY%" -m nuitka --mode=onefile --mingw64 --assume-yes-for-downloads --windows-console-mode=force --include-data-dir=web=web --include-package=uvicorn --include-package=telethon --output-dir=build_output_py312 --output-filename=RelayForge.exe main.py
+echo [BUILD] Compiling with Nuitka 4.3.1 and MinGW64 on Python 3.12...
+"%BUILD_PY%" -c "from importlib.metadata import version; v=version('Nuitka'); print('Nuitka:',v); assert v=='4.3.1'"
 if errorlevel 1 goto error
-if not exist "build_output_py312\RelayForge.exe" (
+"%BUILD_PY%" -m nuitka --version
+if errorlevel 1 goto error
+set "NATIVE_OUT=build_output_py312_%RANDOM%_%RANDOM%"
+"%BUILD_PY%" -m nuitka --mode=onefile --mingw64 --assume-yes-for-downloads --windows-console-mode=force --include-data-dir=web=web --include-package=uvicorn --include-package=telethon --output-dir="%NATIVE_OUT%" --output-filename=RelayForge.exe main.py
+if errorlevel 1 goto error
+if not exist "%NATIVE_OUT%\RelayForge.exe" (
     echo [ERROR] Nuitka returned success but EXE was not created.
     goto error
 )
 
 if not exist "build_output" mkdir "build_output"
-copy /y "build_output_py312\RelayForge.exe" "build_output\RelayForge.exe" >nul
+copy /y "%NATIVE_OUT%\RelayForge.exe" "build_output\RelayForge.exe" >nul
+if errorlevel 1 goto error
+
+echo [SMOKE] Running the actual compiled binary, with an isolated data directory...
+"%BUILD_PY%" "smoke_runtime.py" "%CD%\build_output\RelayForge.exe"
 if errorlevel 1 goto error
 
 rem Stage only runtime files; do not package .py, local data, tokens, or sessions.
@@ -86,11 +108,15 @@ copy /y "OPEN_DASHBOARD.bat" "%STAGE%\OPEN_DASHBOARD.bat" >nul
 if errorlevel 1 goto error
 copy /y "INSTALL_AUTO_START.ps1" "%STAGE%\INSTALL_AUTO_START.ps1" >nul
 if errorlevel 1 goto error
+copy /y "INSTALL_SERVICE_WINDOWS.ps1" "%STAGE%\INSTALL_SERVICE_WINDOWS.ps1" >nul
+if errorlevel 1 goto error
+copy /y "START_PROJECT.bat" "%STAGE%\START_PROJECT.bat" >nul
+if errorlevel 1 goto error
 copy /y "docs\RUNTIME_README_FA.md" "%STAGE%\README_FA.md" >nul
 if errorlevel 1 goto error
 
-set "FINAL_ZIP=RelayForge_v3.0.2_WINDOWS_EXE.zip"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath '%STAGE%\RelayForge.exe','%STAGE%\START_SERVER.bat','%STAGE%\OPEN_DASHBOARD.bat','%STAGE%\INSTALL_AUTO_START.ps1','%STAGE%\README_FA.md' -DestinationPath '%FINAL_ZIP%' -Force"
+set "FINAL_ZIP=RelayForge_v4.0.0_WINDOWS_EXE.zip"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath '%STAGE%\RelayForge.exe','%STAGE%\START_SERVER.bat','%STAGE%\OPEN_DASHBOARD.bat','%STAGE%\INSTALL_AUTO_START.ps1','%STAGE%\README_FA.md','%STAGE%\START_PROJECT.bat','%STAGE%\INSTALL_SERVICE_WINDOWS.ps1' -DestinationPath '%FINAL_ZIP%' -Force"
 if errorlevel 1 goto error
 rmdir /s /q "%STAGE%" >nul 2>&1
 

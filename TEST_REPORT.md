@@ -1,46 +1,22 @@
-# گزارش آزمون RelayForge 3.0.1
+# RelayForge 4.0.0 — Evidence / Test report
 
-تاریخ: ۲۳ نوامبر ۲۰۲۶
+Baseline: `RelayForge_v3.0.2_PY312_BUILD_FIXED_SOURCE.zip` extracted and upgraded, retaining additive SQLite schema and prior architecture. No modification of the user's live data, VPS, or GitHub.
 
-## نتایج تأییدشده
+- Environment: Linux, CPython 3.13.5; FastAPI 0.128.2, Starlette 0.50.0, Pydantic 2.13.5, Uvicorn 0.48.0, HTTPX 0.28.1, cryptography 46.0.4, pytest 9.0.2, pytest-asyncio 1.3.0.
+- Unit and API test suite: **75 passed**, including 50 baseline tests and 25 additional v4 tests. Two baseline test expectations intentionally changed: BotFather historical copy now accepts a bounded archive (instead of always rejecting it), and backfill explicitly opts in. Existing security, queue isolation, restart and migration tests retained.
+- Actual local Python runtime HTTP smoke: PASS. Started subprocess, checked health, HTML and JS/CSS, 401 on unauthorized request, authenticated status with idle engine; stopped disposable test process. No external posts sent.
+- JS syntax (`node --check web/main.js`): PASS. Python self-test: PASS. Offline screenshots rendered actual HTML/CSS/JS with synthetic status and no live API. Direct Chromium localhost navigation was blocked by environment policy, so complete live browser interactions not verified.
+- `Telethon` is not installed in this Linux environment; tests for Telethon actual account login, media download, and reconnect are **not performed**. Provider HTTP tests use mocks. No real provider credentials used.
+- Windows compile, EXE smoke, scheduler, service registration, Windows 10/11 and Server 2019 deployment: **UNVERIFIED**. Windows workflow and scripts included, not run here. No Windows binary included. Nuitka source protection is not absolute.
 
-- ۵۰ آزمون محلی با `python -m pytest -q tests/test_relayforge.py`: همه موفق.
-- `python -m compileall` برای کد Python: بدون خطای Syntax.
-- `node --check web/main.js`: بدون خطای Syntax.
-- FastAPI TestClient: صفحه HTML و CSS با HTTP 200؛ مسیر فایل غیرمجاز 404؛ API بدون کلید 401؛ درخواست مبدأ خارجی 403.
-- `Database`: رمزنگاری token، بازیابی صف و وضعیت پس از crash، عدم تکرار در ingest idempotent، انتخاب بازه شروع/پایان، فیلتر protected content، استقلال بله و ایتا، زمان‌بندی مستقل، امکان تعیین تکلیف uncertain.
-- BotFather: شبیه‌سازی HTTP getUpdates و حفظ update_offset پس از ثبت، حذف رویداد کانال نامرتبط.
-- Gateway: شبیه‌سازی API موفق/خطا و پاسخ استاندارد؛ هیچ ارسال واقعی در این تست‌ها انجام نشده است.
-- اولویت realtime برای مقصدهای فوری و حفظ ترتیب آرشیو در مقصدهای زمان‌بندی‌شده تأیید شد.
-- مدارشکن مقصد: بعد از سه خطای متوالی بله غیرفعال می‌شود، ایتا همچنان فعال است و فعال‌سازی مجدد شمارنده را بازنشانی می‌کند.
-- ارتقای افزودنی جدول `targets` بدون حذف داده قدیمی با آزمون مهاجرت موفق شد.
+## Key regression scenarios
+1. Archive end 200 does not drop live 201; disabling live prevents ingestion.
+2. Exact hashtag and keyword any/all matching, exclusions, prefix/suffix.
+3. Multiple independent destination IDs; default no backfill; opt-in backfill; token update preserves history.
+4. Uncertain delivery blocks only own destination; connect error and rate limit deferred; read timeout remains uncertain.
+5. Bot archive references only Telegram; historical reference upgraded if real live content becomes available; cursor persists; filter/archive incompatible in bot mode.
+6. Reset archives previous operations; backup and no reset with uncertain delivery; API one-time ticket; validation errors redact input.
+7. Provider result missing message ID rejected; Telegram copy protection and same-chat safeguard; publishing rights mock check.
 
-## مواردی که هنوز باید روی Windows Server 2019 تست شوند
-
-1. ساخت EXE واقعی با Nuitka و اسکن آنتی‌ویروس ویندوز.
-2. ورود با API ID/Hash، دریافت کد و رمز دومرحله‌ای و مصرف Telethon در حساب واقعی. (کتابخانه Telethon در محیط تست لینوکس در دسترس نبود.)
-3. ارسال پست واقعی متنی و عکس/فیلم به هر پنج API و احراز مجوز کانال مقصد؛ به‌خصوص سروش‌پلاس.
-4. Task Scheduler بعد از Sign out و ریستارت Windows Server.
-5. نمایش بصری نهایی مرورگر Chromium/Edge روی Windows Server؛ HTTP/HTML بررسی شده ولی اسکرین‌شات مرورگر این محیط مسدود بود.
-
-## ارزیابی امنیتی
-
-- کلیدهای API صرفاً رمزنگاری‌شده در SQLite نگهداری می‌شوند؛ کلید رمزنگاری محلی است؛ NTFS/Backup امن ضروری است.
-- سیاست localhost+کلید پنل+Origin و CSP و عدم نمایش secret در پاسخ وضعیت برقرار.
-- پرهیز از تکرار کور در ارسال‌های uncertain؛ استثناهای مقصد مستقل.
-- محدودیت‌ها: بدون Code Signing و بدون بررسی امنیتی مستقل روی Windows؛ حفاظت ضد مهندسی معکوس کامل نیست؛ جلسات Telethon روی دیسک حساس‌اند.
-
-نتیجه: **سورس آماده آزمون میدانی؛ EXE و انتشار روی کانال اصلی هنوز پذیرش نهایی نشده است.**
-
-## اصلاح تکمیلی نسخه 3.0.1
-
-- وابستگی ازقلم‌افتاده `pytest-asyncio>=1.0,<2` به requirements-dev.txt افزوده شد.
-- طبق گزارش ارسالی کاربر، قبل از نصب افزونه در ویندوز **۴۲ آزمون پاس و ۸ آزمون async به علت نبود پلاگین اجرا نشده‌اند**.
-- فایل‌ها از نظر Syntax در محیط ساخت بررسی شدند. تست‌های 3.0.1 و کامپایل ویندوز هنوز **تأیید مجدد نشده‌اند**؛ برای نتیجه واقعی دستورهای HOTFIX_NOTES_FA.md اجرا شوند.
-
-
-## اصلاح 3.0.2 و وضعیت جدید
-
-- لاگ Windows Server/Windows 10/11 که کاربر فرستاد: ۵۰ آزمون تا مرحله پایان تست اجرا شدند اما در teardown نشست pytest خطای `WinError 5` روی `pytest-current` رخ داد؛ بنابراین خروجی pytest غیرصفر و build مسدود بود.
-- راه‌حل در اسکریپت ساخت: افزودن `--basetemp` با مسیر اختصاصی و تصادفی داخل فولدر پروژه. هیچ تستی خاموش نشده است.
-- این یک اصلاح **محیط تست/بیلد** است و آزمون مجدد روی ویندوز و Nuitka هنوز تأیید نشده؛ نتیجه قبلی ۵۰ تست محلی به‌معنای تأیید EXE ویندوز نیست.
+## Release gates still open
+Real Telegram BotFather and Telethon account tests, Eitaa/Bale/Rubika/Soroush text and media sends, Windows build and service lifecycle, full browser workflow, media album handling and automatic safe cache pruning, single-panel multi-project management, exact daily clock schedule. Status: release candidate / NOT production accepted.

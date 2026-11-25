@@ -5,12 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
-import mimetypes
+import mimetypes, re
 import httpx
 
 class Rejected(Exception): pass
 class Uncertain(Exception): pass
 class NotSupported(Exception): pass
+class RetryLater(Exception):
+    def __init__(self,delay=30): self.delay=max(30,min(86400,int(delay))); super().__init__("خطای موقت؛ تلاش مجدد")
+
+def validate_token(token):
+    if not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",token or ""): raise Rejected("قالب توکن API نامعتبر")
 
 @dataclass(frozen=True)
 class Post:
@@ -35,10 +40,16 @@ METHODS = {
 async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, files=None):
     try:
         response = await client.post(url, json=json, data=data, files=files, follow_redirects=False, timeout=45)
+    except (httpx.ConnectError,httpx.ConnectTimeout,httpx.PoolTimeout):
+        raise RetryLater(30) from None
     except (httpx.TimeoutException, httpx.TransportError) as ex:
         # Do not log URL: token is part of URL. No blind retry after POST.
         raise Uncertain("ارتباط با API مقصد قطع شد؛ رسیدن پیام نامشخص است") from None
-    if response.status_code >= 500 or response.status_code in (408, 429):
+    if response.status_code==429:
+        try: delay=int((response.json().get("parameters") or {}).get("retry_after") or response.headers.get("Retry-After") or 30)
+        except (ValueError,TypeError,AttributeError): delay=30
+        raise RetryLater(delay)
+    if response.status_code >= 500 or response.status_code == 408:
         raise Uncertain(f"پاسخ سرور مقصد HTTP {response.status_code}؛ وضعیت ارسال نامطمئن")
     if response.status_code >= 300 and response.status_code < 400:
         raise Rejected("انتقال HTTP به آدرس دیگر از API پذیرفته نمی‌شود")
@@ -50,7 +61,7 @@ async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, fi
     return obj
 
 
-def _result(platform, obj):
+def _result(platform, obj, require_id=True):
     if platform == "rubika":
         # Rubika Bot API: status=OK; data.message_id, sometimes data is object.
         if str(obj.get("status", "")).upper() not in ("OK", "SUCCESS"):
@@ -61,13 +72,16 @@ def _result(platform, obj):
         if obj.get("ok") is False: raise Rejected("API مقصد درخواست را نپذیرفت (ok=false)")
         if obj.get("ok") is not True: raise Uncertain("API مقصد ok=true مشخصی برنگرداند")
         data = obj.get("result") or {}
-    if isinstance(data, dict):
-        return str(data.get("message_id", data.get("file_id", "")))
-    return str(data) if isinstance(data, (int,str)) else ""
+    if not require_id: return data
+    value=data.get("message_id") if isinstance(data,dict) else data
+    if isinstance(value,bool) or not isinstance(value,(int,str)) or not str(value).strip() or str(value)=="0":
+        raise Uncertain("شناسه پیام مقصد قابل تأیید نیست")
+    return str(value)
 
 async def send(platform: str, token: str, chat_id: str, post: Post):
     if platform not in BASE: raise Rejected("سرویس مقصد ناشناخته")
     if not token or not chat_id: raise Rejected("توکن یا شناسه کانال مقصد وارد نشده")
+    validate_token(token)
     if len(post.text) > 4000: raise Rejected("متن بیش از ۴۰۰۰ نویسه است؛ پیام ناقص ارسال نمی‌شود")
     if not post.path and not post.text: raise Rejected("پیام بدون محتواست")
     if post.path and not Path(post.path).is_file(): raise Rejected("رسانه قابل خواندن نیست")
@@ -96,9 +110,9 @@ async def send(platform: str, token: str, chat_id: str, post: Post):
 async def _send_rubika(client,address,chat_id,post):
     if not post.path:
         return _result("rubika",await _post(client,address+"sendMessage",json={"chat_id":chat_id,"text":post.text}))
-    kind = {"photo":"Image","video":"Video","audio":"Audio","voice":"Voice","animation":"File","document":"File"}.get(post.kind,"File")
+    kind = {"photo":"Image","video":"Video","audio":"Music","voice":"Voice","animation":"Gif","document":"Document"}.get(post.kind,"Document")
     init = await _post(client,address+"requestSendFile",json={"type":kind})
-    _result("rubika",init)
+    _result("rubika",init,False)
     data = init.get("data") if isinstance(init.get("data"),dict) else init
     upload = data.get("upload_url","")
     parsed = urlsplit(upload)
@@ -115,8 +129,32 @@ async def _send_rubika(client,address,chat_id,post):
 
 async def check_token(platform,token):
     if platform not in BASE: raise Rejected("پیام‌رسان ناشناخته")
-    if not token: raise Rejected("توکن وارد نشده")
+    validate_token(token)
     async with httpx.AsyncClient(trust_env=True) as client:
         res=await _post(client,BASE[platform]+token+"/getMe",json={} if platform=="rubika" else None)
-    _result(platform,res)
-    return {"ok":True,"note":"اعتبار API بررسی شد؛ مجوز انتشار کانال باید جداگانه تست شود"}
+    _result(platform,res,False)
+    return {"ok":True,"note":"اعتبار API بررسی شد؛ مجوز انتشار کانال هنوز تأیید نشده"}
+
+async def check_target(platform,token,chat_id):
+    validate_token(token)
+    if platform not in ("telegram","bale"): return await check_token(platform,token)
+    address=BASE[platform]+token+"/"
+    async with httpx.AsyncClient(trust_env=True) as client:
+        me=_result(platform,await _post(client,address+"getMe"),False)
+        chat=_result(platform,await _post(client,address+"getChat",json={"chat_id":chat_id}),False)
+        member=_result(platform,await _post(client,address+"getChatMember",json={"chat_id":chat_id,"user_id":me["id"]}),False)
+    if chat.get("type")!="channel" or not (member.get("status")=="creator" or (member.get("status")=="administrator" and member.get("can_post_messages") is True)):
+        raise Rejected("ربات مجوز انتشار در کانال مقصد ندارد")
+    return {"ok":True,"chat_id":str(chat["id"]),"note":"API مجوز انتشار را تأیید کرد (بدون ارسال پیام؛ انتشار واقعی هنوز تست نشده)"}
+
+async def copy_telegram(token,source,chat_id,msg_id):
+    validate_token(token)
+    address=BASE["telegram"]+token+"/"
+    async with httpx.AsyncClient(trust_env=True) as client:
+        # Read-only preflight: uncertain read errors are safe to retry, not a send.
+        try:
+            src=_result("telegram",await _post(client,address+"getChat",json={"chat_id":source}),False)
+            dst=_result("telegram",await _post(client,address+"getChat",json={"chat_id":chat_id}),False)
+        except Uncertain: raise RetryLater(30) from None
+        if src.get("has_protected_content") or src.get("id")==dst.get("id"): raise Rejected("مبدأ محافظت‌شده یا برابر مقصد است")
+        return _result("telegram",await _post(client,address+"copyMessage",json={"chat_id":chat_id,"from_chat_id":source,"message_id":msg_id}))

@@ -1,6 +1,8 @@
 # Run this script in PowerShell as Administrator, on the VPS after EXE build.
 # A dedicated low-privilege service account is strongly recommended.
 $ErrorActionPreference = 'Stop'
+if (Get-Service -Name RelayForgeStudio -ErrorAction SilentlyContinue) { throw 'Remove the RelayForgeStudio service before creating a scheduled task.' }
+if (Get-ScheduledTask -TaskName RelayForge -ErrorAction SilentlyContinue) { throw 'RelayForge task already exists; manage it in Task Scheduler.' }
 $exe = Join-Path $PSScriptRoot 'RelayForge.exe'
 if (!(Test-Path -LiteralPath $exe)) { throw 'RelayForge.exe is missing; compile on Windows first.' }
 $account = Read-Host 'Windows account to run task as (DOMAIN\Username or .\serviceuser)'

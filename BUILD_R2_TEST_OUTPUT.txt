@@ -1,0 +1,10 @@
+Local Linux test run (Windows build not executed):
+........................................................................ [ 96%]
+...                                                                      [100%]
+75 passed in 2.64s
+
+Source smoke output (not a compiled EXE):
+HTTP SMOKE OK 4.0.0 (no real provider sends)
+RelayForge 4.0 | http://127.0.0.1:59493
+Dashboard password file: /tmp/relayforge-smoke-_1f4kq0q/data/dashboard-key.txt
+

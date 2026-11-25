@@ -10,3 +10,13 @@ data/
 *.session*
 *.exe
 .pytest_relayforge_*/
+.venv*/
+.pytest_build*/
+build_output*/
+release_stage*/
+projects/
+backups/
+*.sqlite3*
+secrets.key
+dashboard-key.txt
+*_WINDOWS_EXE.zip

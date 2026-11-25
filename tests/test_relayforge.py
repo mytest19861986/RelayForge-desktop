@@ -81,7 +81,7 @@ def test_protected_content_not_enqueued(db):
 
 def test_enable_after_ingest(db):
     db.ingest(15,'hello')
-    target(db,'rubika')
+    db.update_target('rubika',{'token':TOKEN,'chat_id':'@dest','enabled':True,'include_backlog':True})
     assert db.next_delivery('rubika')['msg_id']==15
 
 
@@ -111,8 +111,8 @@ def test_reject_source_identity_change_after_ingest(db):
     with pytest.raises(ValueError):db.update_source({**SOURCE,'channel':'@different'})
 
 
-def test_bot_history_is_disallowed(db):
-    with pytest.raises(ValueError):db.update_source({**SOURCE,'history_enabled':True})
+def test_bot_history_requires_end(db):
+    with pytest.raises(ValueError):db.update_source({**SOURCE,'history_enabled':True,'end_id':None})
 
 
 def test_user_mode_validation(db):

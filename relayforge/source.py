@@ -2,7 +2,7 @@
 No scraping, bypass of protected content, or automatic OTP verification.
 """
 from __future__ import annotations
-import asyncio, logging, mimetypes, os, re
+import asyncio, logging, mimetypes, os, re, hashlib, shutil
 from pathlib import Path
 from urllib.parse import quote
 import httpx
@@ -36,7 +36,7 @@ def bot_message_payload(item: dict) -> dict:
                 break
     return {"msg_id":int(item["message_id"]),"body":item.get("text") or item.get("caption") or "",
             "media_kind":kind,"media_ref":ref,"media_name":name,
-            "protected":bool(item.get("has_protected_content"))}
+            "protected":bool(item.get("has_protected_content") or (item.get("chat") or {}).get("has_protected_content"))}
 
 class Collector:
     def __init__(self, db:Database):
@@ -54,13 +54,13 @@ class Collector:
     async def shutdown(self):
         if self.user_client:
             try: await self.user_client.disconnect()
-            finally: self.user_client=None
+            finally: self.user_client=None; self._entity=None; self._handler=None
 
     async def _client(self):
         config=self.db.get_source()
         if config["mode"]!="user" or not config["api_id"] or not config["api_hash"]:
             raise SourceUnavailable("برای API ID/Hash ابتدا روش کاربری را تنظیم کنید")
-        signature=(config["api_id"],config["api_hash"])
+        signature=(config["api_id"],config["api_hash"],config["phone"])
         if self.user_client and self._user_signature!=signature:
             await self.shutdown()
             self._entity=None
@@ -69,7 +69,8 @@ class Collector:
                 from telethon import TelegramClient
             except ImportError as ex:
                 raise SourceUnavailable("بسته telethon نصب نیست") from ex
-            self.user_client = TelegramClient(str(self.db.root/"telegram_user"),int(config["api_id"]),config["api_hash"],
+            session_id=hashlib.sha256("|".join(signature).encode()).hexdigest()[:24]
+            self.user_client = TelegramClient(str(self.db.root/("telegram_user_"+session_id)),int(config["api_id"]),config["api_hash"],
                                                 auto_reconnect=True,connection_retries=3,request_retries=2)
             self._user_signature=signature
         if not self.user_client.is_connected(): await self.user_client.connect()
@@ -151,6 +152,15 @@ class Collector:
             await self._user_tick(cfg)
 
     async def _bot_tick(self,cfg):
+        if cfg["history_enabled"] and any(t["enabled"] and t["provider"]=="telegram" for t in self.db.targets()):
+            cursor=max(int(self.db.get_setting("history_cursor") or 0),cfg["start_id"]-1)
+            if cursor<cfg["end_id"] and self.db.snapshot()["stats"].get("queued",0)<2000:
+                self.state="bot_archive"
+                # References only; no claim of having read historical text.
+                for mid in range(cursor+1,min(cursor+40,cfg["end_id"])+1):
+                    self.db.ingest(mid,media_kind="copy",media_ref=cfg["channel"],epoch=cfg["epoch"])
+                    self.db.set_setting("history_cursor",mid)
+                if not cfg["realtime_enabled"]: await asyncio.sleep(1); return
         if not cfg["realtime_enabled"]: self.state="paused"; await asyncio.sleep(3); return
         self.state="listening_bot"
         token=cfg["bot_token"]
@@ -161,17 +171,18 @@ class Collector:
                 res=await client.post(f"https://api.telegram.org/bot{token}/getUpdates",json=payload)
                 result=res.json()
         except (httpx.TransportError,ValueError,KeyError):
-            self.state="network_retry"; await asyncio.sleep(8); return
+            self.state="network_retry"; await asyncio.sleep(30); return
         if res.status_code != 200 or result.get("ok") is not True:
             self.state="api_error"
             self.db.event("WARN","source",f"خطای دریافت بات HTTP {res.status_code} یا مصرف‌کننده/Webhook دیگر")
-            await asyncio.sleep(12); return
+            await asyncio.sleep(30); return
         for update in result.get("result",[]):
             uid=int(update["update_id"])
             post=update.get("channel_post")
             if post and matches_channel(cfg["channel"],post.get("chat") or {}):
                 item=bot_message_payload(post)
-                self.db.ingest(**item,live=True)
+                if post.get("chat",{}).get("id"): self.db.set_setting("source_peer",str(post["chat"]["id"]))
+                self.db.ingest(**item,live=True,epoch=cfg["epoch"])
             # Commit offset only after durable ingestion; duplicate replay is idempotent.
             self.db.set_setting("bot_offset",uid)
 
@@ -179,7 +190,7 @@ class Collector:
         self.state="user_connecting"
         try: client=await self._client()
         except (SourceUnavailable,Exception) as ex:
-            self.state="login_required"; await asyncio.sleep(8); return
+            self.state="login_required"; await asyncio.sleep(30); return
         if not await client.is_user_authorized():
             self.state="login_required"; await asyncio.sleep(5); return
         if self._entity is None or getattr(self,"_entity_ref",None) != cfg["channel"]:
@@ -191,13 +202,14 @@ class Collector:
                     client.remove_event_handler(self._handler)
                 from telethon import events, utils
                 expected=utils.get_peer_id(entity)
+                self.db.set_setting("source_peer",str(expected))
                 async def on_new(event):
                     current=self.db.get_source()
                     if current["mode"]!="user" or not current["realtime_enabled"]:return
                     if event.chat_id != expected: return
                     try: await self._ingest_user(event.message,current,live=True)
                     except Exception:
-                        log.exception("Failed to ingest Telegram event")
+                        log.warning("Failed to ingest Telegram event")
                         self.db.event("WARN","source","رویداد لحظه‌ای قابل ذخیره نبود؛ پیمایش دوره‌ای دوباره بررسی می‌کند")
                 self._handler=on_new
                 client.add_event_handler(on_new,events.NewMessage(chats=entity))
@@ -206,6 +218,15 @@ class Collector:
                 self.db.event("WARN","source","کانال مبدأ با حساب فعلی قابل خواندن نیست")
                 await asyncio.sleep(20); return
         self.state="listening_user"
+        if cfg["realtime_enabled"]:
+            cursor=self.db.get_setting("live_cursor")
+            if cursor is None:
+                latest=await client.get_messages(self._entity,limit=1)
+                self.db.set_setting("live_cursor",int(latest[0].id) if latest else 0)
+            else:
+                async for msg in client.iter_messages(self._entity,min_id=cursor,reverse=True,limit=80):
+                    await self._ingest_user(msg,cfg,live=True)
+                    self.db.set_setting("live_cursor",msg.id)
         if cfg["history_enabled"]:
             cursor=int(self.db.get_setting("history_cursor") or (cfg["start_id"]-1))
             cursor=max(cursor,cfg["start_id"]-1)
@@ -225,13 +246,19 @@ class Collector:
         else:
             await asyncio.sleep(cfg["poll_seconds"])
 
+    def check_media_capacity(self, expected=0):
+        folder=self.db.root/"media"
+        total=sum(p.stat().st_size for p in folder.iterdir() if p.is_file())
+        if total+expected>1024*1024*1024 or shutil.disk_usage(folder).free<max(expected,100*1024*1024):
+            raise SourceUnavailable("سقف کش ۱ گیگابایت یا فضای آزاد دیسک؛ پس از پشتیبان‌گیری فضای کافی فراهم کنید")
+
     async def _ingest_user(self,msg,cfg,live=False):
         if not msg or not getattr(msg,"id",None): return
-        if msg.id < cfg["start_id"] or (cfg["end_id"] is not None and msg.id>cfg["end_id"]): return
-        protected=bool(getattr(msg,"noforwards",False))
+        if not live and (msg.id < cfg["start_id"] or (cfg["end_id"] is not None and msg.id>cfg["end_id"])): return
+        protected=bool(getattr(msg,"noforwards",False) or getattr(self._entity,"noforwards",False))
         body=(getattr(msg,"message","") or "")
         kind="text";media="";name=""
-        if getattr(msg,"media",None):
+        if getattr(msg,"media",None) and not (getattr(msg,"web_preview",None) and not getattr(msg,"document",None) and not getattr(msg,"photo",None)):
             if getattr(msg,"photo",None): kind="photo"
             elif getattr(msg,"video",None): kind="video"
             elif getattr(msg,"voice",None): kind="voice"
@@ -245,7 +272,8 @@ class Collector:
                 self.db.event("WARN","source",f"رسانه پیام {msg.id} بزرگ‌تر از حد مجاز است")
             elif not protected:
                 # Cache authorized media before acknowledging archive progress.
-                filename=self.db.root/"media"/f"user_{msg.id}"
+                self.check_media_capacity(size or cfg["max_media_mb"]*1024*1024)
+                filename=self.db.root/"media"/f"user_{cfg['epoch']}_{msg.id}"
                 actual=await msg.download_media(file=str(filename))
                 if not actual:
                     raise SourceUnavailable("فایل رسانه دریافت نشد")
@@ -254,7 +282,7 @@ class Collector:
                     actual_path.unlink(missing_ok=True)
                     raise SourceUnavailable("حجم واقعی فایل بیش از حد مجاز است")
                 media=str(actual_path.relative_to(self.db.root.resolve()))
-        self.db.ingest(msg.id,body,kind,"",media,name,protected,live=live)
+        self.db.ingest(msg.id,body,kind,"",media,name,protected,epoch=cfg["epoch"],live=live)
 
     async def get_media(self,row):
         if row["media_kind"] == "text": return ""
@@ -287,6 +315,7 @@ class Collector:
                 sz=int(meta.get("file_size") or 0)
                 cap=self.db.get_source()["max_media_mb"]*1024*1024
                 if sz and sz>cap: raise SourceUnavailable("فایل بزرگ‌تر از حد تنظیم‌شده است")
+                self.check_media_capacity(sz or cap)
                 file_path=str(meta.get("file_path", ""))
                 if not file_path or '..' in file_path or file_path.startswith('/') or '\\' in file_path:
                     raise SourceUnavailable("آدرس فایل نامعتبر است")

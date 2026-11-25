@@ -1,6 +1,6 @@
 """Durable SQLite state with per-destination outboxes and write-ahead delivery markers."""
 from __future__ import annotations
-import json, os, secrets, sqlite3, threading, time
+import json, os, secrets, sqlite3, threading, time, re, unicodedata, shutil
 from contextlib import contextmanager
 from pathlib import Path
 from cryptography.fernet import Fernet
@@ -9,10 +9,30 @@ PLATFORMS = ("telegram", "bale", "rubika", "eitaa", "soroush")
 
 def now(): return time.time()
 
+def provider(route):
+    return route.split(":",1)[0]
+
+def normalized(text):
+    return unicodedata.normalize("NFKC", text).translate(str.maketrans("يكى", "یکی")).casefold().replace("\u200c", " ")
+
+def matches_filter(body, src):
+    if not src.get("filter_enabled"): return True
+    text=normalized(body)
+    tags=set(re.findall(r"(?<!\w)#[\w]+", normalized(body)))
+    words=[normalized(x.strip()) for x in src.get("keywords",[]) if x.strip()]
+    wanted=["#"+normalized(x.strip().lstrip("#")) for x in src.get("hashtags",[]) if x.strip()]
+    excluded=[normalized(x.strip()) for x in src.get("exclude_words",[]) if x.strip()]
+    if any(x in text for x in excluded): return False
+    checks=[x in text for x in words]+[x in tags for x in wanted]
+    return (all(checks) if src.get("filter_match")=="all" else any(checks)) if checks else True
+
+
 DEFAULT_SOURCE = {
     "mode": "bot", "channel": "", "bot_token": "", "api_id": "", "api_hash": "",
     "phone": "", "start_id": 1, "end_id": None, "history_enabled": False,
     "realtime_enabled": True, "poll_seconds": 45, "max_media_mb": 20,
+    "filter_enabled":False,"keywords":[],"hashtags":[],"exclude_words":[],"filter_match":"any",
+    "prefix":"","suffix":"",
 }
 
 class Database:
@@ -88,10 +108,12 @@ class Database:
             columns={row["name"] for row in c.execute("PRAGMA table_info(targets)")}
             if "fail_streak" not in columns:
                 c.execute("ALTER TABLE targets ADD COLUMN fail_streak INTEGER NOT NULL DEFAULT 0")
+            msgcols={row["name"] for row in c.execute("PRAGMA table_info(source_messages)")}
+            if "eligible" not in msgcols: c.execute("ALTER TABLE source_messages ADD COLUMN eligible INTEGER NOT NULL DEFAULT 1")
             for p in PLATFORMS:
                 c.execute("INSERT OR IGNORE INTO targets(platform) VALUES (?)", (p,))
             for name, value in (
-                ("source", DEFAULT_SOURCE), ("epoch", 1), ("bot_offset", 0), ("history_cursor", 0)
+                ("source", DEFAULT_SOURCE), ("epoch", 1), ("bot_offset", 0), ("history_cursor", 0), ("run_enabled", False), ("live_cursor", None), ("source_peer", None)
             ):
                 c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES (?,?)", (name, json.dumps(value, ensure_ascii=False)))
 
@@ -114,7 +136,7 @@ class Database:
             c.execute("INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, json.dumps(value, ensure_ascii=False)))
 
     def get_source(self, public=False):
-        src = self.get_setting("source")
+        src = {**DEFAULT_SOURCE, **self.get_setting("source")}
         for field in ("bot_token", "api_hash", "phone"):
             src[field] = bool(src[field]) if public else self.reveal(src[field])
         src["epoch"] = self.get_setting("epoch")
@@ -127,7 +149,7 @@ class Database:
             if k in raw: new[k] = str(raw[k]).strip()
         for k in ("bot_token", "api_hash", "phone"):
             if k in raw and str(raw[k]).strip(): new[k] = str(raw[k]).strip()
-        for k in ("history_enabled", "realtime_enabled"):
+        for k in ("history_enabled", "realtime_enabled", "filter_enabled"):
             if k in raw: new[k] = bool(raw[k])
         for k in ("start_id", "poll_seconds", "max_media_mb"):
             if k in raw: new[k] = int(raw[k])
@@ -138,8 +160,17 @@ class Database:
         if new["mode"] == "bot" and not new["bot_token"]: raise ValueError("توکن BotFather مبدأ لازم است")
         if new["mode"] == "user" and (not new["api_id"].isdigit() or int(new["api_id"]) < 1 or not new["api_hash"]):
             raise ValueError("API ID و API Hash معتبر لازم است")
-        if new["mode"] == "bot" and new["history_enabled"]:
-            raise ValueError("BotFather به تاریخچه قدیمی کانال دسترسی ندارد؛ برای آرشیو روش API ID/Hash را انتخاب کنید")
+        for k in ("keywords","hashtags","exclude_words"):
+            if k in raw:
+                if not isinstance(raw[k],list) or len(raw[k])>100 or any(not isinstance(x,str) or len(x)>200 for x in raw[k]): raise ValueError("فیلتر نامعتبر")
+                new[k]=raw[k]
+        for k in ("prefix","suffix","filter_match"):
+            if k in raw: new[k]=str(raw[k])
+        if new["filter_match"] not in ("any","all") or any(len(new[k])>500 for k in ("prefix","suffix")): raise ValueError("تنظیم فیلتر نامعتبر")
+        if new["mode"]=="bot" and new["history_enabled"]:
+            if new["end_id"] is None: raise ValueError("برای آرشیو BotFather شماره پایان الزامی است")
+            if new["filter_enabled"] or new["prefix"] or new["suffix"]: raise ValueError("آرشیو BotFather متن قابل خواندن ندارد؛ برای فیلتر یا ویرایش از API Hash استفاده کنید")
+        if new["bot_token"] and not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",new["bot_token"]): raise ValueError("قالب توکن نامعتبر است")
         if not 1 <= new["start_id"] <= 2_000_000_000: raise ValueError("شناسه شروع نامعتبر است")
         if new["end_id"] is not None and new["end_id"] < new["start_id"]: raise ValueError("شماره پایان باید بزرگ‌تر از شروع باشد")
         if not 10 <= new["poll_seconds"] <= 3600: raise ValueError("فاصله بررسی ۱۰ تا ۳۶۰۰ ثانیه")
@@ -147,7 +178,7 @@ class Database:
         if new["mode"] == "user" and len(new["api_hash"]) < 16: raise ValueError("API Hash ناقص به نظر می‌رسد")
         identity = any(new[k] != old[k] for k in ("mode", "channel", "bot_token", "api_id", "api_hash", "phone"))
         with self.connection() as c:
-            exists = c.execute("SELECT COUNT(*) n FROM source_messages").fetchone()["n"]
+            exists = c.execute("SELECT COUNT(*) n FROM source_messages WHERE epoch=?", (old["epoch"],)).fetchone()["n"]
         if identity and exists:
             raise ValueError("مبدأ قبلاً پیام ثبت کرده است؛ برای تغییر حساب یا کانال ابتدا پروژه تازه و پشتیبان مستقل ایجاد کنید")
         enc = dict(new)
@@ -155,18 +186,33 @@ class Database:
         self.set_setting("source", enc)
         if not exists:
             self.set_setting("history_cursor", new["start_id"] - 1)
+            if identity: self.set_setting("bot_offset",0); self.set_setting("live_cursor",None); self.set_setting("source_peer",None)
         self.event("INFO", "source", "تنظیمات مبدأ ذخیره شد")
 
     def target(self, platform, public=False):
-        if platform not in PLATFORMS: raise ValueError("پیام‌رسان ناشناخته")
+        if provider(platform) not in PLATFORMS: raise ValueError("پیام‌رسان ناشناخته")
         with self.connection() as c:
             row = c.execute("SELECT * FROM targets WHERE platform=?", (platform,)).fetchone()
+        if row is None: raise ValueError("مقصد یافت نشد")
         d = dict(row)
+        d["provider"]=provider(platform)
+        if public:
+            with self.connection() as c:
+                d["sent_count"]=c.execute("SELECT COUNT(*) FROM outbox WHERE platform=? AND status='sent'",(platform,)).fetchone()[0]
         d["token"] = bool(d["token"]) if public else self.reveal(d["token"])
         return d
 
     def targets(self, public=True):
-        return [self.target(p, public) for p in PLATFORMS]
+        with self.connection() as c: ids=[r[0] for r in c.execute("SELECT platform FROM targets ORDER BY rowid")]
+        return [self.target(p, public) for p in ids]
+
+    def add_target(self, platform):
+        if platform not in PLATFORMS: raise ValueError("پیام‌رسان ناشناخته")
+        with self.connection() as c:
+            if c.execute("SELECT COUNT(*) FROM targets").fetchone()[0]>=50: raise ValueError("سقف ۵۰ مقصد")
+            route=platform+":"+secrets.token_hex(4)
+            c.execute("INSERT INTO targets(platform) VALUES(?)",(route,))
+        return route
 
     def update_target(self, platform, raw):
         old = self.target(platform)
@@ -175,31 +221,49 @@ class Database:
         enabled = int(bool(raw.get("enabled", old["enabled"])))
         interval = int(raw.get("interval_seconds", old["interval_seconds"]))
         if interval < 0 or interval > 604800: raise ValueError("فاصله ارسال باید از صفر تا ۷ روز باشد")
+        if token and not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",token): raise ValueError("قالب توکن نامعتبر است")
         if enabled and (not token or not chat_id): raise ValueError("قبل از فعال‌سازی، توکن و شناسه کانال مقصد را وارد کنید")
         with self.connection() as c:
-            existing = c.execute("SELECT COUNT(*) n FROM outbox WHERE platform=?", (platform,)).fetchone()["n"]
-            if existing and (token != old["token"] or chat_id != old["chat_id"]):
-                raise ValueError("این مقصد تاریخچه ارسال دارد. تغییر شناسه/توکن برای جلوگیری از تکرار نیاز به پروژه مستقل دارد")
+            epoch=self.get_setting("epoch")
+            existing = c.execute("SELECT COUNT(*) n FROM outbox o JOIN source_messages m ON m.id=o.message_id WHERE o.platform=? AND m.epoch=?", (platform,epoch)).fetchone()["n"]
+            inflight=c.execute("SELECT COUNT(*) FROM outbox WHERE platform=? AND status='sending'",(platform,)).fetchone()[0]
+            if inflight and (token!=old["token"] or chat_id!=old["chat_id"]): raise ValueError("ارسال در جریان است؛ ابتدا توقف")
+            if existing and chat_id != old["chat_id"]:
+                raise ValueError("برای تغییر کانال مقصد دارای صف، مقصد جدید بسازید یا عملیات را بازنشانی کنید؛ توکن همان مقصد قابل تغییر است")
+            if enabled and provider(platform)=="telegram":
+                src=self.get_source()
+                if normalized(chat_id)==normalized(src["channel"]): raise ValueError("مبدأ و مقصد تلگرام نباید یکسان باشند")
+                if c.execute("SELECT 1 FROM targets WHERE platform<>? AND (platform='telegram' OR platform LIKE 'telegram:%') AND enabled=1 AND lower(chat_id)=lower(?)",(platform,chat_id)).fetchone(): raise ValueError("کانال مقصد تلگرام تکراری است")
             c.execute("UPDATE targets SET token=?,chat_id=?,enabled=?,interval_seconds=?,updated=?,fail_streak=? WHERE platform=?",
-                      (self.secret(token), chat_id, enabled, interval, now(), 0 if enabled and not old["enabled"] else old["fail_streak"], platform))
-            if enabled and not old["enabled"]:
-                c.execute('''INSERT OR IGNORE INTO outbox(message_id,platform,status,updated)
-                    SELECT id, ?, 'queued', ? FROM source_messages WHERE protected=0''', (platform, now()))
+                      (self.secret(token), chat_id, enabled, interval, now(), 0 if enabled and (not old["enabled"] or token!=old["token"]) else old["fail_streak"], platform))
+            if enabled and raw.get("include_backlog", False):
+                c.execute("""INSERT OR IGNORE INTO outbox(message_id,platform,status,updated)
+                    SELECT id, ?, 'queued', ? FROM source_messages WHERE protected=0 AND eligible=1 AND epoch=? AND (media_kind<>'copy' OR ?='telegram')""", (platform, now(),epoch,provider(platform)))
         self.event("INFO", platform, "مقصد %s شد" % ("فعال" if enabled else "غیرفعال"))
+        if old["chat_id"] and old["chat_id"]!=chat_id: self.event("WARN",platform,"شناسه کانال مقصد عوض شد؛ سوابق قبلی متعلق به "+old["chat_id"][:150])
 
     def ingest(self, msg_id, body="", media_kind="text", media_ref="", media_path="", media_name="", protected=False, epoch=None, live=False):
         epoch = epoch if epoch is not None else self.get_setting("epoch")
         src = self.get_source()
-        if msg_id < src["start_id"] or (src["end_id"] is not None and msg_id > src["end_id"]):
+        if not live and (msg_id < src["start_id"] or (src["end_id"] is not None and msg_id > src["end_id"])):
             return False
+        if epoch != src["epoch"]: return False
+        if live and not src["realtime_enabled"]: return False
+        eligible=matches_filter(body,src) if media_kind!="copy" else not src["filter_enabled"]
+        if eligible and media_kind!="copy": body=(src["prefix"]+body+src["suffix"])
         with self.connection() as c:
-            cur = c.execute("INSERT OR IGNORE INTO source_messages(epoch,msg_id,body,media_kind,media_ref,media_path,media_name,protected,live,received_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                            (epoch, int(msg_id), body[:15000], media_kind, media_ref, media_path, media_name, int(protected), int(live), now()))
-            if not cur.rowcount: return False
-            mid = cur.lastrowid
-            if not protected:
-                c.execute("INSERT OR IGNORE INTO outbox(message_id,platform,status,updated) SELECT ?, platform, 'queued', ? FROM targets WHERE enabled=1", (mid, now()))
-        self.event("WARN" if protected else "INFO", "source", f"پست {msg_id} " + ("محافظت‌شده؛ منتشر نمی‌شود" if protected else "به صف انتشار اضافه شد"))
+            cur = c.execute("INSERT OR IGNORE INTO source_messages(epoch,msg_id,body,media_kind,media_ref,media_path,media_name,protected,live,received_at,eligible) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                            (epoch,int(msg_id),body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),now(),int(eligible)))
+            if not cur.rowcount:
+                old=c.execute("SELECT id,media_kind FROM source_messages WHERE epoch=? AND msg_id=?",(epoch,msg_id)).fetchone()
+                if old["media_kind"]!="copy" or media_kind=="copy": return False
+                mid=old["id"]
+                c.execute("UPDATE source_messages SET body=?,media_kind=?,media_ref=?,media_path=?,media_name=?,protected=?,live=?,eligible=? WHERE id=?",(body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),int(eligible),mid))
+                if protected or not eligible: c.execute("UPDATE outbox SET status='skipped',detail='محتوا محافظت‌شده یا فیلتر شده' WHERE message_id=? AND status='queued'",(mid,))
+            else: mid=cur.lastrowid
+            if not protected and eligible:
+                c.execute("""INSERT OR IGNORE INTO outbox(message_id,platform,status,updated) SELECT ?, platform, 'queued', ? FROM targets WHERE enabled=1 AND (?<>'copy' OR platform='telegram' OR platform LIKE 'telegram:%')""", (mid, now(),media_kind))
+        self.event("WARN" if protected or not eligible else "INFO", "source", f"پست {msg_id} " + ("محافظت‌شده؛ منتشر نمی‌شود" if protected else "فیلتر شد" if not eligible else "ثبت شد"))
         return True
 
     def set_media_path(self, message_id, relative):
@@ -217,12 +281,13 @@ class Database:
                       t.next_allowed,t.interval_seconds,t.token,t.chat_id,t.enabled
                       FROM outbox o JOIN source_messages m ON m.id=o.message_id
                       JOIN targets t ON t.platform=o.platform
-                      WHERE o.platform=? AND o.status='queued' AND t.enabled=1
-                      ORDER BY (CASE WHEN t.interval_seconds=0 AND m.live=1 THEN 0 ELSE 1 END),m.msg_id ASC LIMIT 1''', (platform,)).fetchone()
+                      WHERE o.platform=? AND o.status='queued' AND t.enabled=1 AND m.epoch=?
+                      ORDER BY (CASE WHEN t.interval_seconds=0 AND m.live=1 THEN 0 ELSE 1 END),m.msg_id ASC LIMIT 1''', (platform,self.get_setting("epoch"))).fetchone()
             if not row: return None
             d=dict(row)
             d["token"] = self.reveal(d["token"])
             if d["next_allowed"] > now(): return None
+            if c.execute("SELECT 1 FROM outbox WHERE platform=? AND status IN ('sending','uncertain')",(platform,)).fetchone(): return None
             c.execute("UPDATE outbox SET status='sending',tries=tries+1,updated=? WHERE id=? AND status='queued'", (now(), d["id"]))
             return d
 
@@ -241,8 +306,9 @@ class Database:
 
     def retry_or_resolve(self, did, action):
         with self.connection() as c:
-            row = c.execute("SELECT status,platform FROM outbox WHERE id=?", (did,)).fetchone()
+            row = c.execute("SELECT o.status,o.platform,m.epoch FROM outbox o JOIN source_messages m ON m.id=o.message_id WHERE o.id=?", (did,)).fetchone()
             if not row: raise ValueError("ارسال یافت نشد")
+            if row["epoch"] != self.get_setting("epoch"): raise ValueError("ارسال متعلق به عملیات بایگانی شده است")
             if row["status"] not in ("failed", "uncertain"): raise ValueError("فقط خطاهای ثبت‌شده قابل تعیین تکلیف‌اند")
             if action == "retry": status="queued"
             elif action == "mark_sent": status="sent"
@@ -261,6 +327,27 @@ class Database:
         with self.connection() as c:
             c.execute("INSERT INTO activity(created,level,platform,message) VALUES (?,?,?,?)", (now(), level, platform, message[:700]))
             c.execute("DELETE FROM activity WHERE id NOT IN (SELECT id FROM activity ORDER BY id DESC LIMIT 3000)")
+
+    def backup(self):
+        dest=self.root/"backups"/(time.strftime("%Y%m%d-%H%M%S")+"-"+secrets.token_hex(3))
+        dest.mkdir(parents=True,exist_ok=False)
+        with self.connection() as c:
+            with sqlite3.connect(dest/"relayforge.sqlite3") as target: c.backup(target)
+        shutil.copy2(self.root/"secrets.key",dest/"secrets.key")
+        if os.name!="nt": dest.chmod(0o700)
+        self.event("INFO","system","پشتیبان پایگاه داده و کلید ساخته شد؛ رسانه و session جداگانه نگهداری شوند")
+        return str(dest)
+
+    def reset_operation(self):
+        # Preserve old delivery records; do not delete the database or encryption key.
+        epoch=self.get_setting("epoch")
+        with self.connection() as c:
+            if c.execute("SELECT 1 FROM outbox WHERE status IN ('sending','uncertain')").fetchone(): raise ValueError("ارسال نامطمئن را ابتدا تعیین تکلیف کنید")
+            c.execute("UPDATE outbox SET status='skipped',detail='عملیات بایگانی شد' WHERE status='queued'")
+            c.execute("UPDATE targets SET enabled=0,next_allowed=0,fail_streak=0,last_error=''")
+            for k,v in (("epoch",epoch+1),("bot_offset",0),("history_cursor",self.get_source()["start_id"]-1),("live_cursor",None),("source_peer",None),("run_enabled",False)):
+                c.execute("UPDATE settings SET value=? WHERE key=?",(json.dumps(v),k))
+        self.event("WARN","system","عملیات جدید؛ سابقه قبلی حفظ شد و مقصدها غیرفعال شدند")
 
     def snapshot(self):
         with self.connection() as c:

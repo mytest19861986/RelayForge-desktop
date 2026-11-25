@@ -1,6 +1,6 @@
-"""RelayForge 4.3.9 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.10 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
-import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
+import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time, json
 from relayforge import backup42 as backups
 from relayforge.splus_user import is_user, marker
 from logging.handlers import RotatingFileHandler
@@ -14,7 +14,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge import richtext, ai43, gemini431, ai_settings, ai436, style437
+from relayforge import richtext, ai43, gemini431, ai_settings, ai436, style437, publish410
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -110,7 +110,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.9",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.10",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -140,6 +140,7 @@ class AIProfile(BaseModel):
     destination:str=Field(default="",max_length=200)
     template:str=Field(default="{body}",max_length=1500)
     locked:list[str]=Field(default_factory=list,max_length=30)
+    identity_footer:str=Field(default="",max_length=1000)
 
 class AIKeyInput(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -168,6 +169,7 @@ class AIPreview(BaseModel):
     max_models:int=Field(default=6,ge=1,le=20)
     emoji:bool=False
     fact_mode:Literal["strict","balanced","creative","free"]="strict"
+    identity_footer:str=Field(default="",max_length=1000)
     api_path:Literal["legacy","generateContent"]="legacy"
 
 class StyleAnalyze(BaseModel):
@@ -297,7 +299,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.9",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.10",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -453,6 +455,11 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 source=str(style437.channel_ref(data.channel))
             else:
                 rows=style437.local_samples(service.db,data.count);source='local archive'
+                channel=service.db.get_source(public=True).get('channel','')
+                try:
+                    ref=style437.channel_ref(channel)
+                    if isinstance(ref,str):source=ref
+                except ValueError:pass
             result=await asyncio.wait_for(style437.analyze(service.db,rows,data.count,data.name,source,data.use_ai,data.consent),timeout=240)
             return style437.save(service.db,result)
         except TimeoutError:raise HTTPException(400,'زمان تحلیل پایان یافت؛ خودکار تکرار نمی‌شود') from None
@@ -478,14 +485,64 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         if data.fact_mode!='free' and any(not x.strip() or len(x)>200 for x in data.profile.locked):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
         try:
             if data.provider=="gemini" and (data.api_path=="generateContent" or data.model_mode!="manual"):
-                return await asyncio.wait_for(ai436.preview(service.db,data.text,data.profile.model_dump(),data.consent,data.model,data.model_mode,data.max_models,data.emoji,data.fact_mode),timeout=240)
-            profile=data.profile.model_dump()
-            if data.emoji and data.provider in ("openai","gemini"):profile["instructions"]+=" Add a few relevant Unicode emoji."
-            return await ai43.preview(service.db,data.text,profile,data.provider,data.consent,data.model,data.fact_mode)
+                result=await asyncio.wait_for(ai436.preview(service.db,data.text,data.profile.model_dump(exclude={"identity_footer"}),data.consent,data.model,data.model_mode,data.max_models,data.emoji,data.fact_mode),timeout=240)
+            else:
+                profile=data.profile.model_dump(exclude={"identity_footer"})
+                if data.emoji and data.provider in ("openai","gemini"):profile["instructions"]+=" Add a few relevant Unicode emoji."
+                result=await ai43.preview(service.db,data.text,profile,data.provider,data.consent,data.model,data.fact_mode)
+            # Explicit user-selected identity is deterministic, not a model hallucination.
+            footer=data.identity_footer or data.profile.identity_footer
+            if footer and not result.get('blocked'):
+                result['output']=publish410.append_footer(result['output'],footer)
+                result['candidate']=result['output']
+            return result
         except TimeoutError:raise HTTPException(400,'زمان پردازش پایان یافت؛ نتیجه نامشخص') from None
         except Exception as exc:raise safe_exception(exc) from None
 
-    @app.post('/api/ai-lab/podcast-script',dependencies=[Depends(auth)])
+    @app.get('/api/ai-lab/publish-targets',dependencies=[Depends(auth)])
+    async def publish_targets():
+        return {'targets':[{k:t[k] for k in ('platform','provider','chat_id','enabled')} for t in service.db.targets() if t['token'] and t['chat_id']]}
+
+    @app.post('/api/ai-lab/publish',dependencies=[Depends(auth)])
+    async def publish_draft(request:Request):
+        # Read a bounded body before JSON parsing; auth and Origin checks apply first.
+        body=bytearray()
+        async for chunk in request.stream():
+            if len(body)+len(chunk)>publish410.MAX_REQUEST:raise HTTPException(413,'حجم درخواست بیش از حد مجاز است')
+            body.extend(chunk)
+        try:data=publish410.Publication.model_validate_json(bytes(body))
+        except ValueError:raise HTTPException(422,'درخواست انتشار نامعتبر است') from None
+        if len(set(data.routes))!=len(data.routes):raise HTTPException(422,'مقصد تکراری است')
+        if not data.text.strip() and not data.attachment:raise HTTPException(422,'متن یا فایل لازم است')
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'برای ارسال آزمایشی ابتدا موتور را متوقف کنید')
+            try:
+                available={t['platform'] for t in service.db.targets()}
+                if not set(data.routes)<=available:raise ValueError('مقصد معتبر انتخاب کنید')
+                targets=[service.db.target(x) for x in data.routes]
+                if any(not t or not t['token'] or not t['chat_id'] for t in targets):raise ValueError('مقصد معتبر و دارای توکن انتخاب کنید')
+                if len({(t['provider'],t['chat_id'].lower()) for t in targets})!=len(targets):raise ValueError('کانال مقصد تکراری است')
+                if data.attachment and len(data.text)>950:raise ValueError('کپشن رسانه حداکثر ۹۵۰ نویسه است؛ متن را کوتاه کنید')
+                spans=({'type':'bold','start':0,'end':len(data.text.split('\n',1)[0])},) if data.bold_heading and data.text.split('\n',1)[0].strip() else ()
+                results=[]
+                with publish410.attachment_file(data.attachment) as (path,kind):
+                    for t in targets:
+                        route=t['platform'];provider=t['provider'];mode=(service.db.get_setting('rich43_modes') or {}).get(provider,richtext.DEFAULTS[provider])
+                        post=Post(data.text,kind,path,spans,mode)
+                        try:
+                            coro=service.engine.splus.send(route,t['chat_id'],post) if provider=='soroush' and t['token']==marker(route) else send(provider,t['token'],t['chat_id'],post)
+                            remote=await asyncio.wait_for(coro,timeout=120)
+                            if not remote:raise Uncertain('شناسه پیام نامشخص')
+                            result={'route':route,'status':'sent','remote_id':str(remote)}
+                        except Rejected:result={'route':route,'status':'rejected','detail':'مقصد پیام را رد کرد؛ تنظیمات و نوع فایل را بررسی کنید'}
+                        except RetryLater:result={'route':route,'status':'retry_later','detail':'محدودیت موقت مقصد؛ بدون تکرار خودکار'}
+                        except (Uncertain,TimeoutError):result={'route':route,'status':'uncertain','detail':'نتیجه نامشخص؛ قبل از تکرار کانال را بررسی کنید'}
+                        except Exception:result={'route':route,'status':'uncertain','detail':'خطای ارسال؛ قبل از تکرار کانال را بررسی کنید'}
+                        results.append(result);service.db.event('INFO' if result['status']=='sent' else 'WARNING',route,'انتشار دستی: '+result['status'])
+                return {'results':results,'automatic_retry':False}
+            except ValueError as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/ai-lab/podcast-script' ,dependencies=[Depends(auth)])
     async def podcast_script(data:GeminiScript):
         try:
             if data.api_path=="generateContent" or data.model_mode!="manual":return await asyncio.wait_for(ai436.podcast(service.db,data.text,data.consent,data.model,data.model_mode,data.max_models),timeout=240)
@@ -778,7 +835,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.9"}
+    async def health():return {"status":"running","version":"4.3.10"}
 
     return app
 
@@ -805,17 +862,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.9"); return
+        print("SELF TEST OK 4.3.10"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.9")
+            backups.pre_upgrade(data,"4.3.10")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.9")
-            print(f"RelayForge 4.3.9 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.10")
+            print(f"RelayForge 4.3.10 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard opens automatically; use OPEN_DASHBOARD.bat if needed.",flush=True)
             import threading
             if not opt.no_browser and stop is None:

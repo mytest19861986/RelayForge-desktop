@@ -2,6 +2,14 @@
 
 Historical snapshot imports, not original commit history.
 
+## 4.3.10
+
+- Editable content drafts, authorized destination selection and test publishing.
+- Channel identity and repeated signatures, fixed branding and media attachment.
+- Draft save/load, preview and media generation integration.
+- Delivered archive SHA-256: `0ab0c048d3d4f70858dd11c6d9ed2ee1c379b4e86e13a97247e05ce0bf81b44b`.
+- Delivered test report: 247 tests passed; Windows and live provider acceptance pending.
+
 ## 4.3.9
 
 - Four rewrite freedom levels: strict, balanced, creative and completely free.

@@ -2,11 +2,11 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
-title RelayForge v4.3.9 - Python 3.12 Windows EXE Builder
+title RelayForge v4.3.10 - Python 3.12 Windows EXE Builder
 color 0B
 
 echo =========================================================
-echo   RelayForge 4.3.9 - FULL BUILD [Python 3.12]
+echo   RelayForge 4.3.10 - FULL BUILD [Python 3.12]
 echo =========================================================
 echo.
 echo [INFO] This build uses a separate .venv-build312 environment.
@@ -15,7 +15,7 @@ echo.
 
 rem Fail early on partial extraction, before creating any environment.
 echo [PREFLIGHT] Checking the complete source package...
-for %%F in (requirements.txt requirements-dev.txt main.py pytest.ini smoke_runtime.py relayforge\__init__.py relayforge\database.py relayforge\backup42.py relayforge\richtext.py relayforge\ai43.py relayforge\gemini431.py relayforge\ai_settings.py relayforge\ai436.py relayforge\splus_user.py relayforge\engine.py relayforge\gateways.py relayforge\source.py relayforge\windows_service.py web\index.html web\main.css web\main.js tests\test_relayforge.py tests\test_v4.py tests\test_v41.py tests\test_v42.py tests\test_v43.py tests\test_v431.py tests\test_v432.py tests\test_v433.py tests\test_v434.py tests\test_v435.py tests\test_v436.py tests\test_v437.py tests\test_v438.py tests\test_v439.py relayforge\style437.py START_SERVER.bat OPEN_DASHBOARD.bat START_PROJECT.bat INSTALL_AUTO_START.ps1 INSTALL_SERVICE_WINDOWS.ps1 docs\RUNTIME_README_FA.md) do (
+for %%F in (requirements.txt requirements-dev.txt main.py pytest.ini smoke_runtime.py relayforge\__init__.py relayforge\database.py relayforge\backup42.py relayforge\richtext.py relayforge\ai43.py relayforge\gemini431.py relayforge\ai_settings.py relayforge\ai436.py relayforge\splus_user.py relayforge\engine.py relayforge\gateways.py relayforge\source.py relayforge\windows_service.py web\index.html web\main.css web\main.js tests\test_relayforge.py tests\test_v4.py tests\test_v41.py tests\test_v42.py tests\test_v43.py tests\test_v431.py tests\test_v432.py tests\test_v433.py tests\test_v434.py tests\test_v435.py tests\test_v436.py tests\test_v437.py tests\test_v438.py tests\test_v439.py tests\test_v410.py relayforge\style437.py relayforge\publish410.py START_SERVER.bat OPEN_DASHBOARD.bat START_PROJECT.bat INSTALL_AUTO_START.ps1 INSTALL_SERVICE_WINDOWS.ps1 docs\RUNTIME_README_FA.md) do (
     if not exist "%%F" (
         echo [ERROR] Missing required file: %%F
         echo [ACTION] Extract the COMPLETE ZIP to a new folder. Do not run a patch alone.
@@ -115,7 +115,7 @@ if errorlevel 1 goto error
 copy /y "docs\RUNTIME_README_FA.md" "%STAGE%\README_FA.md" >nul
 if errorlevel 1 goto error
 
-set "FINAL_ZIP=RelayForge_v4.3.9_WINDOWS_EXE.zip"
+set "FINAL_ZIP=RelayForge_v4.3.10_WINDOWS_EXE.zip"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath '%STAGE%\RelayForge.exe','%STAGE%\START_SERVER.bat','%STAGE%\OPEN_DASHBOARD.bat','%STAGE%\INSTALL_AUTO_START.ps1','%STAGE%\README_FA.md','%STAGE%\START_PROJECT.bat','%STAGE%\INSTALL_SERVICE_WINDOWS.ps1' -DestinationPath '%FINAL_ZIP%' -Force"
 if errorlevel 1 goto error
 rmdir /s /q "%STAGE%" >nul 2>&1

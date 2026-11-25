@@ -90,7 +90,7 @@ def make_backup(root,password,mode='full',label='manual'):
         if sum(p.stat().st_size for p,_ in entries)>MAX_BYTES:raise ValueError('حجم داده بیش از ۱۲۸ مگابایت؛ حالت تنظیمات یا کپی آفلاین data را استفاده کنید')
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=3) as z:
-            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.3.9','mode':mode,'created':time.time()}))
+            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.3.10','mode':mode,'created':time.time()}))
             for p,name in entries:z.write(p,name)
         private_file(dest,seal(buf.getvalue(),password))
     return dest

@@ -50,7 +50,7 @@ def test_api(tmp_path,monkeypatch):
         x=r.json();assert c.get('/api/styles/'+x['id'],headers=h).json()==x
         assert c.get('/api/styles',headers=h).json()['styles']==[x]
         assert c.post('/api/styles/analyze',headers=h,json={'name':'x','use_ai':True}).status_code==400
-        html=c.get('/').text;assert 'data-studio="channel"' in html and 'v4.3.9' in html
+        html=c.get('/').text;assert 'data-studio="channel"' in html and 'v4.3.10' in html
         assert not app.state.service.engine.active
 
 def test_edit(tmp_path):

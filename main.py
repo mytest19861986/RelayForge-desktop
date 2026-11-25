@@ -1,4 +1,4 @@
-"""RelayForge 4.3.4 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.5 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -106,7 +106,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.4",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.5",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -254,7 +254,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.4",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.5",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -408,7 +408,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.post('/api/ai-lab/podcast-script',dependencies=[Depends(auth)])
     async def podcast_script(data:GeminiScript):
-        try:return await asyncio.wait_for(gemini431.podcast_script(service.db,data.text,data.consent,data.model),timeout=90)
+        try:return await asyncio.wait_for(gemini431.podcast_script(service.db,data.text,data.consent,data.model),timeout=120)
         except TimeoutError:raise HTTPException(400,'زمان ساخت متن پادکست پایان یافت؛ درخواست تکرار نمی‌شود') from None
         except Exception as exc:raise safe_exception(exc) from None
 
@@ -685,7 +685,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.4"}
+    async def health():return {"status":"running","version":"4.3.5"}
 
     return app
 
@@ -712,17 +712,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.4"); return
+        print("SELF TEST OK 4.3.5"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.4")
+            backups.pre_upgrade(data,"4.3.5")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.4")
-            print(f"RelayForge 4.3.4 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.5")
+            print(f"RelayForge 4.3.5 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

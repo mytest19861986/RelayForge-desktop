@@ -1,4 +1,4 @@
-HTTP SMOKE OK 4.2.0 (no real provider sends)
-RelayForge 4.2 | http://127.0.0.1:54275
-Dashboard password file: /tmp/relayforge-smoke-8enkrj_f/data/dashboard-key.txt
+HTTP SMOKE OK 4.3.0 (no real provider sends; rich text + local AI lab)
+RelayForge 4.3 | http://127.0.0.1:54665
+Dashboard password file: /tmp/relayforge-smoke-33d61n92/data/dashboard-key.txt
 

@@ -65,7 +65,7 @@ def prepare_db(path,mode):
         con.execute('PRAGMA foreign_keys=ON');con.execute('PRAGMA trusted_schema=OFF')
         if mode=='settings':strip_history(con)
         con.execute("DELETE FROM settings WHERE key LIKE 'backup42_%'")
-        con.execute("UPDATE settings SET value='false' WHERE key='run_enabled'")
+        con.execute("UPDATE settings SET value='false' WHERE key IN ('run_enabled','ai43_enabled')")
         con.commit()
         if mode=='settings':con.execute('VACUUM') # discard deleted history pages
     finally:con.close()
@@ -90,7 +90,7 @@ def make_backup(root,password,mode='full',label='manual'):
         if sum(p.stat().st_size for p,_ in entries)>MAX_BYTES:raise ValueError('حجم داده بیش از ۱۲۸ مگابایت؛ حالت تنظیمات یا کپی آفلاین data را استفاده کنید')
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=3) as z:
-            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.2.0','mode':mode,'created':time.time()}))
+            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.3.0','mode':mode,'created':time.time()}))
             for p,name in entries:z.write(p,name)
         private_file(dest,seal(buf.getvalue(),password))
     return dest
@@ -121,7 +121,7 @@ def validate_and_rekey(path,oldkey,newkey,mode):
             con.execute('UPDATE targets SET token=? WHERE platform=?',(convert(token),route))
         if mode=='settings':strip_history(con)
         con.execute("DELETE FROM settings WHERE key LIKE 'backup42_%'")
-        con.execute("UPDATE settings SET value='false' WHERE key='run_enabled'")
+        con.execute("UPDATE settings SET value='false' WHERE key IN ('run_enabled','ai43_enabled')")
         # Prevent silent replay after restoring an older snapshot; resume must be explicit.
         con.execute("UPDATE targets SET enabled=0")
         con.execute("UPDATE outbox SET status='uncertain',detail='ارسال در جریان در زمان پشتیبان' WHERE status='sending'")

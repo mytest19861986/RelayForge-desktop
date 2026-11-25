@@ -1,4 +1,4 @@
-"""RelayForge 4.2 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -13,6 +13,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
+from relayforge import richtext, ai43
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -105,7 +106,43 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.2",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3",min_length=1,max_length=500)
+
+class RichModes(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    modes:dict[str,str]
+
+class RichPreview(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    platform:Literal["telegram","bale","eitaa","rubika","soroush"]
+    mode:str=""
+    text:str=Field(min_length=1,max_length=4000)
+    entities:list[dict]=Field(default_factory=list,max_length=256)
+    caption:bool=False
+
+class RichTest(ConfirmAction):
+    mode:str=""
+
+class AIEnable(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    enabled:bool
+
+class AIProfile(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    brand:str=Field(default="",max_length=120)
+    tone:Literal["formal","friendly","news","educational","sales","concise","custom"]="formal"
+    instructions:str=Field(default="",max_length=1000)
+    destination:str=Field(default="",max_length=200)
+    template:str=Field(default="{body}",max_length=1500)
+    locked:list[str]=Field(default_factory=list,max_length=30)
+
+class AIPreview(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    provider:Literal["local","openai"]="local"
+    text:str=Field(min_length=1,max_length=6000)
+    profile:AIProfile
+    model:str="gpt-4o-mini"
+    consent:bool=False
 
 class SplusLogin(BaseModel):
     phone:str=Field(default="",max_length=25)
@@ -187,7 +224,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.2.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -238,6 +275,70 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         if filename not in ("main.css","main.js"):raise HTTPException(404)
         mime="text/css" if filename.endswith("css") else "text/javascript"
         return FileResponse(web_root()/filename,media_type=mime)
+
+    @app.get('/api/richtext',dependencies=[Depends(auth)])
+    async def rich_config():
+        return {'modes':{**richtext.DEFAULTS,**(service.db.get_setting('rich43_modes') or {})},'available':richtext.MODES}
+
+    @app.post('/api/richtext',dependencies=[Depends(auth)])
+    async def rich_save(data:RichModes):
+        if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+        if set(data.modes)!=set(PLATFORMS) or any(v not in richtext.MODES[k] for k,v in data.modes.items()):raise HTTPException(422,'حالت قالب‌بندی نامعتبر')
+        service.db.set_setting('rich43_modes',data.modes)
+        return {'ok':True}
+
+    @app.post('/api/richtext/preview',dependencies=[Depends(auth)])
+    async def rich_preview(data:RichPreview):
+        if data.mode and data.mode not in richtext.MODES[data.platform]:raise HTTPException(422,'حالت نامعتبر')
+        text,options,warnings=richtext.render(data.platform,data.text,data.entities,data.mode or None,data.caption)
+        return {'text':text,'options':options,'warnings':warnings}
+
+    @app.post('/api/richtext/test/{platform}',dependencies=[Depends(auth)])
+    async def rich_test(platform:str,data:RichTest):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            if platform not in [t['platform'] for t in service.db.targets()]:raise HTTPException(404)
+            try:
+                d=service.db.target(platform);p=d['provider'];mode=data.mode or (service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
+                if mode not in richtext.MODES[p]:raise ValueError('حالت قالب نامعتبر')
+                text='آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب'
+                spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
+                post=Post(text,entities=spans,format_mode=mode)
+                remote=await service.engine.splus.send(platform,d['chat_id'],post) if p=='soroush' and d['token']==marker(platform) else await send(p,d['token'],d['chat_id'],post)
+                service.db.event('INFO',platform,'تست قالب‌بندی ارسال شد؛ نمایش در پیام‌رسان را دستی بررسی کنید')
+                return {'ok':True,'remote_id':str(remote),'note':'نمایش بولد را در برنامه مقصد بررسی کنید'}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.get('/api/ai-lab',dependencies=[Depends(auth)])
+    async def ai_config():
+        return {'enabled':bool(service.db.get_setting('ai43_enabled')),'key_available':bool(os.environ.get('RELAYFORGE_AI_API_KEY')),'profiles':service.db.get_setting('ai43_profiles') or {},'usage':service.db.get_setting('ai43_usage') or {},'prompt_version':ai43.PROMPT_VERSION}
+
+    @app.post('/api/ai-lab/enable',dependencies=[Depends(auth)])
+    async def ai_enable(data:AIEnable):
+        service.db.set_setting('ai43_enabled',data.enabled);return {'ok':True}
+
+    @app.get('/api/ai-lab/sample',dependencies=[Depends(auth)])
+    async def ai_sample():
+        with service.db.connection() as c:
+            row=c.execute("SELECT msg_id,body,entities FROM source_messages WHERE epoch=? AND protected=0 AND eligible=1 AND media_kind<>'copy' AND body<>'' ORDER BY id DESC LIMIT 1",(service.db.get_setting('epoch'),)).fetchone()
+        if not row:raise HTTPException(404,'نمونه متنی مجاز موجود نیست')
+        return {'msg_id':row['msg_id'],'text':row['body'][:6000],'entities':richtext.load(row['body'],row['entities'])}
+
+    @app.post('/api/ai-lab/profile/{route}',dependencies=[Depends(auth)])
+    async def ai_profile(route:str,data:AIProfile):
+        if route not in [t['platform'] for t in service.db.targets()]:raise HTTPException(404)
+        values=data.model_dump()
+        if any(not x.strip() or len(x)>200 for x in values['locked']):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
+        try:ai43.template_render(data.template,dict(body='نمونه',brand=data.brand,title='',destination=data.destination,hashtags=''))
+        except ValueError as exc:raise safe_exception(exc) from None
+        profiles=service.db.get_setting('ai43_profiles') or {};profiles[route]=values;service.db.set_setting('ai43_profiles',profiles)
+        return {'ok':True}
+
+    @app.post('/api/ai-lab/preview',dependencies=[Depends(auth)])
+    async def ai_preview(data:AIPreview):
+        if any(not x.strip() or len(x)>200 for x in data.profile.locked):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
+        try:return await ai43.preview(service.db,data.text,data.profile.model_dump(),data.provider,data.consent,data.model)
+        except Exception as exc:raise safe_exception(exc) from None
 
     @app.get("/api/status",dependencies=[Depends(auth)])
     async def status():
@@ -506,7 +607,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.2.0"}
+    async def health():return {"status":"running","version":"4.3.0"}
 
     return app
 
@@ -533,17 +634,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.2.0"); return
+        print("SELF TEST OK 4.3.0"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.2.0")
+            backups.pre_upgrade(data,"4.3.0")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.2.0")
-            print(f"RelayForge 4.2 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.0")
+            print(f"RelayForge 4.3 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

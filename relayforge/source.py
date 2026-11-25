@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 import httpx
 from .database import Database, matches_filter
+from .richtext import from_wire
 
 log = logging.getLogger("relayforge.source")
 
@@ -34,7 +35,9 @@ def bot_message_payload(item: dict) -> dict:
                 kind,ref = field,obj["file_id"]
                 name = obj.get("file_name","") or field+{"video":".mp4","animation":".gif","audio":".mp3","voice":".ogg"}.get(field,".bin")
                 break
-    return {"msg_id":int(item["message_id"]),"body":item.get("text") or item.get("caption") or "",
+    body=item.get("text") or item.get("caption") or ""
+    entities=from_wire(body,item.get("entities" if item.get("text") is not None else "caption_entities"))
+    return {"msg_id":int(item["message_id"]),"body":body,"entities":entities,
             "media_kind":kind,"media_ref":ref,"media_name":name,
             "protected":bool(item.get("has_protected_content") or (item.get("chat") or {}).get("has_protected_content"))}
 
@@ -273,8 +276,9 @@ class Collector:
         if not live and (msg.id < cfg["start_id"] or (cfg["end_id"] is not None and msg.id>cfg["end_id"])): return
         protected=bool(getattr(msg,"noforwards",False) or getattr(self._entity,"noforwards",False))
         body=(getattr(msg,"message","") or "")
+        entities=from_wire(body,getattr(msg,"entities",None),telethon=True)
         if not matches_filter(body,cfg):
-            self.db.ingest(msg.id,body,protected=protected,epoch=cfg["epoch"],live=live); return
+            self.db.ingest(msg.id,body,protected=protected,epoch=cfg["epoch"],live=live,entities=entities); return
         if getattr(msg,"action",None):
             self.db.event("WARN","source",f"پست {msg.id}: پیام سیستمی قابل انتشار نیست"); return
         kind="text";media="";name=""
@@ -305,7 +309,7 @@ class Collector:
                     actual_path.unlink(missing_ok=True)
                     raise SourceUnavailable("حجم واقعی فایل بیش از حد مجاز است")
                 media=str(actual_path.relative_to(self.db.root.resolve()))
-        self.db.ingest(msg.id,body,kind,"",media,name,protected,epoch=cfg["epoch"],live=live)
+        self.db.ingest(msg.id,body,kind,"",media,name,protected,epoch=cfg["epoch"],live=live,entities=entities)
 
     async def get_media(self,row):
         if row["media_kind"] == "text": return ""

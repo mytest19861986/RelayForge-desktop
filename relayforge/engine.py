@@ -5,6 +5,7 @@ from .database import Database, PLATFORMS, provider
 from .gateways import Post, send, Rejected, Uncertain, NotSupported, RetryLater, copy_telegram, check_target
 from .source import Collector, SourceUnavailable
 from .splus_user import Accounts, is_user, marker
+from .richtext import load, render, DEFAULTS
 
 log=logging.getLogger("relayforge.engine")
 
@@ -94,7 +95,11 @@ class Engine:
                 except Exception as exc:
                     self.db.defer_delivery(did,platform,30,"خطای دریافت رسانه پیش از ارسال: "+type(exc).__name__)
                     return
-                post=Post(job["body"],job["media_kind"],path)
+                spans=load(job["body"],job.get("entities","[]"))
+                mode=(self.db.get_setting("rich43_modes") or {}).get(provider(platform),DEFAULTS.get(provider(platform),"plain"))
+                _,_,warnings=render(provider(platform),job["body"],spans,mode,bool(path))
+                for warning in warnings:self.db.event("WARN",platform,f"#{did}: {warning}")
+                post=Post(job["body"],job["media_kind"],path,tuple(spans),mode)
                 if provider(platform)=="soroush" and is_user(job["token"]):
                     if job["token"]!=marker(platform):raise Rejected("نشست مقصد سروش نامعتبر")
                     remote=await self.splus.send(platform,job["chat_id"],post)
@@ -119,5 +124,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"4.2.0","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.3.0","source_state":self.collector.state,"engine_running":self.active})
         return result

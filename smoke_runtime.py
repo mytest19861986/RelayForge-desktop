@@ -18,10 +18,10 @@ def main():
                     if proc.poll() is not None: raise RuntimeError('Process exited early')
                     try:
                         with opener.open(base+'/api/health',timeout=2) as r: health=json.load(r)
-                        if health.get('version')=='4.2.0':break
+                        if health.get('version')=='4.3.0':break
                     except (OSError,ValueError):time.sleep(.4)
                 else: raise RuntimeError('HTTP server did not start')
-                for path,needle in [('/',b'RELAYFORGE'),('/assets/main.js',b'engine-start'),('/assets/main.css',b'engine-control')]:
+                for path,needle in [('/',b'RELAYFORGE'),('/assets/main.js',b'initLab'),('/assets/main.css',b'engine-control')]:
                     with opener.open(base+path,timeout=4) as r: assert r.status==200 and needle in r.read()
                 try: opener.open(base+'/api/status',timeout=4)
                 except urllib.error.HTTPError as ex: assert ex.code==401;ex.close()
@@ -29,8 +29,14 @@ def main():
                 key=(data/'dashboard-key.txt').read_text().strip()
                 req=urllib.request.Request(base+'/api/status',headers={'X-Studio-Key':key})
                 with opener.open(req,timeout=4) as r: status=json.load(r)
-                assert not status['engine_running'] and len(status['targets'])==5 and status['version']=='4.2.0'
-                print('HTTP SMOKE OK 4.2.0 (no real provider sends)')
+                assert not status['engine_running'] and len(status['targets'])==5 and status['version']=='4.3.0'
+                h={'X-Studio-Key':key,'Content-Type':'application/json','Origin':base}
+                req=urllib.request.Request(base+'/api/richtext/preview',headers=h,data=json.dumps({'platform':'bale','text':'sample text','entities':[{'type':'bold','start':0,'end':6}]}).encode())
+                with opener.open(req,timeout=5) as r: assert json.load(r)['text']=='*sample* text'
+                req=urllib.request.Request(base+'/api/ai-lab/preview',headers=h,data=json.dumps({'text':'sample content','profile':{'template':'{body}'}}).encode())
+                with opener.open(req,timeout=5) as r:
+                    draft=json.load(r);assert draft['published'] is False and draft['output']=='sample content'
+                print('HTTP SMOKE OK 4.3.0 (no real provider sends; rich text + local AI lab)')
             finally:
                 if proc.poll() is None:
                     if os.name=='nt': subprocess.run(['taskkill','/PID',str(proc.pid),'/T','/F'],capture_output=True,timeout=20)

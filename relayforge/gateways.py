@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
-import mimetypes, re
+import mimetypes, re, json
+from .richtext import render
 import httpx
 
 class Rejected(Exception): pass
@@ -31,6 +32,8 @@ class Post:
     text: str
     kind: str = "text"
     path: str = ""
+    entities: tuple = ()
+    format_mode: str = ""
 
 BASE = {
     "telegram": "https://api.telegram.org/bot",
@@ -116,13 +119,14 @@ async def send(platform: str, token: str, chat_id: str, post: Post):
     if post.path and not Path(post.path).is_file(): raise Rejected("رسانه قابل خواندن نیست")
     if post.path and platform in ("telegram", "bale", "soroush") and len(post.text) > 950:
         raise Rejected("کپشن رسانه از حد قابل‌اطمینان فراتر است")
+    formatted, options, _ = render(platform,post.text,post.entities,post.format_mode or None,caption=bool(post.path))
     address = BASE[platform] + token + "/"
     if platform == "eitaa": chat_id = chat_id.lstrip("@")
     async with httpx.AsyncClient(trust_env=True) as client:
         if platform == "rubika":
-            return await _send_rubika(client,address,chat_id,post)
+            return await _send_rubika(client,address,chat_id,post,formatted,options)
         if not post.path:
-            data = {"chat_id":chat_id,"text":post.text}
+            data = {"chat_id":chat_id,"text":formatted,**options}
             res = await _post(client,address+"sendMessage",data=data if platform=="eitaa" else None,
                               json=data if platform!="eitaa" else None)
             return _result(platform,res)
@@ -132,13 +136,14 @@ async def send(platform: str, token: str, chat_id: str, post: Post):
             method, field = METHODS.get(post.kind, METHODS["document"])
         mime = mimetypes.guess_type(post.path)[0] or "application/octet-stream"
         with open(post.path,"rb") as f:
-            res=await _post(client,address+method,data={"chat_id":chat_id,"caption":post.text},
+            res=await _post(client,address+method,data={"chat_id":chat_id,"caption":formatted,**{k:json.dumps(v,ensure_ascii=False) if isinstance(v,(list,dict)) else v for k,v in options.items()}},
                             files={field:(Path(post.path).name,f,mime)})
         return _result(platform,res)
 
-async def _send_rubika(client,address,chat_id,post):
+async def _send_rubika(client,address,chat_id,post,formatted=None,options=None):
+    formatted=post.text if formatted is None else formatted;options=options or {}
     if not post.path:
-        return _result("rubika",await _post(client,address+"sendMessage",json={"chat_id":chat_id,"text":post.text}))
+        return _result("rubika",await _post(client,address+"sendMessage",json={"chat_id":chat_id,"text":formatted,**options}))
     kind = {"photo":"Image","video":"Video","audio":"Music","voice":"Voice","animation":"Gif","document":"File"}.get(post.kind,"File")
     init = await _post(client,address+"requestSendFile",json={"type":kind})
     _result("rubika",init,False)
@@ -154,7 +159,7 @@ async def _send_rubika(client,address,chat_id,post):
     udata = uploaded.get("data") if isinstance(uploaded.get("data"),dict) else uploaded
     file_id = udata.get("file_id")
     if not file_id: raise Uncertain("روبیکا file_id معتبر پس از آپلود برنگرداند")
-    return _result("rubika",await _post(client,address+"sendFile",json={"chat_id":chat_id,"file_id":file_id,"text":post.text}))
+    return _result("rubika",await _post(client,address+"sendFile",json={"chat_id":chat_id,"file_id":file_id,"text":formatted,**options}))
 
 async def check_token(platform,token):
     if platform not in BASE: raise Rejected("پیام‌رسان ناشناخته")

@@ -1,2 +1,2 @@
-4.2.0
+4.3.0
 Release candidate; Windows build and live provider acceptance pending.

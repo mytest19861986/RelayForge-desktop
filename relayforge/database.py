@@ -4,6 +4,7 @@ import json, os, secrets, sqlite3, threading, time, re, unicodedata, shutil, log
 from contextlib import contextmanager
 from pathlib import Path
 from cryptography.fernet import Fernet
+from .richtext import normalize, shifted, load
 
 PLATFORMS = ("telegram", "bale", "rubika", "eitaa", "soroush")
 
@@ -115,6 +116,7 @@ class Database:
             if "target_chat" not in outcols: c.execute("ALTER TABLE outbox ADD COLUMN target_chat TEXT NOT NULL DEFAULT ''")
             msgcols={row["name"] for row in c.execute("PRAGMA table_info(source_messages)")}
             if "eligible" not in msgcols: c.execute("ALTER TABLE source_messages ADD COLUMN eligible INTEGER NOT NULL DEFAULT 1")
+            if "entities" not in msgcols: c.execute("ALTER TABLE source_messages ADD COLUMN entities TEXT NOT NULL DEFAULT '[]'")
             for p in PLATFORMS:
                 c.execute("INSERT OR IGNORE INTO targets(platform) VALUES (?)", (p,))
             for name, value in (
@@ -260,7 +262,7 @@ class Database:
             self.event("WARN",platform,"آرشیو BotFather فقط به تلگرام می‌رود؛ برای آرشیو این مقصد روش API ID/Hash را انتخاب کنید")
         if old["chat_id"] and old["chat_id"]!=chat_id: self.event("WARN",platform,"شناسه کانال مقصد عوض شد؛ سوابق قبلی متعلق به "+old["chat_id"][:150])
 
-    def ingest(self, msg_id, body="", media_kind="text", media_ref="", media_path="", media_name="", protected=False, epoch=None, live=False):
+    def ingest(self, msg_id, body="", media_kind="text", media_ref="", media_path="", media_name="", protected=False, epoch=None, live=False, entities=None):
         epoch = epoch if epoch is not None else self.get_setting("epoch")
         src = self.get_source()
         if not live and (msg_id < src["start_id"] or (src["end_id"] is not None and msg_id > src["end_id"])):
@@ -268,15 +270,22 @@ class Database:
         if epoch != src["epoch"]: return False
         if live and not src["realtime_enabled"]: return False
         eligible=matches_filter(body,src) if media_kind!="copy" else not src["filter_enabled"]
-        if eligible and media_kind!="copy": body=(src["prefix"]+body+src["suffix"])
+        spans=normalize(body,entities)
+        if eligible and media_kind!="copy": body,spans=shifted(body,spans,src["prefix"],src["suffix"])
+        else: body=body[:15000];spans=normalize(body,spans)
+        encoded=json.dumps(spans,ensure_ascii=False)
         with self.connection() as c:
-            cur = c.execute("INSERT OR IGNORE INTO source_messages(epoch,msg_id,body,media_kind,media_ref,media_path,media_name,protected,live,received_at,eligible) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                            (epoch,int(msg_id),body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),now(),int(eligible)))
+            cur = c.execute("INSERT OR IGNORE INTO source_messages(epoch,msg_id,body,media_kind,media_ref,media_path,media_name,protected,live,received_at,eligible,entities) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (epoch,int(msg_id),body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),now(),int(eligible),encoded))
             if not cur.rowcount:
-                old=c.execute("SELECT id,media_kind FROM source_messages WHERE epoch=? AND msg_id=?",(epoch,msg_id)).fetchone()
-                if old["media_kind"]!="copy" or media_kind=="copy": return False
+                old=c.execute("SELECT id,media_kind,body,entities,protected FROM source_messages WHERE epoch=? AND msg_id=?",(epoch,msg_id)).fetchone()
+                if old["media_kind"]!="copy" or media_kind=="copy":
+                    # Authorized rescan can enrich exactly matching historical text, never requeue.
+                    if not protected and not old["protected"] and spans and old["body"]==body and not load(body,old["entities"]):
+                        c.execute("UPDATE source_messages SET entities=? WHERE id=?",(encoded,old["id"]))
+                    return False
                 mid=old["id"]
-                c.execute("UPDATE source_messages SET body=?,media_kind=?,media_ref=?,media_path=?,media_name=?,protected=?,live=?,eligible=? WHERE id=?",(body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),int(eligible),mid))
+                c.execute("UPDATE source_messages SET body=?,media_kind=?,media_ref=?,media_path=?,media_name=?,protected=?,live=?,eligible=?,entities=? WHERE id=?",(body[:15000],media_kind,media_ref,media_path,media_name,int(protected),int(live),int(eligible),encoded,mid))
                 if protected or not eligible: c.execute("UPDATE outbox SET status='skipped',detail='محتوا محافظت‌شده یا فیلتر شده' WHERE message_id=? AND status='queued'",(mid,))
             else: mid=cur.lastrowid
             if not protected and eligible:
@@ -299,7 +308,7 @@ class Database:
 
     def next_delivery(self, platform):
         with self.connection() as c:
-            row = c.execute('''SELECT o.*,m.msg_id,m.body,m.media_kind,m.media_ref,m.media_path,m.media_name,m.protected,m.live,
+            row = c.execute('''SELECT o.*,m.msg_id,m.body,m.entities,m.media_kind,m.media_ref,m.media_path,m.media_name,m.protected,m.live,
                       t.next_allowed,t.interval_seconds,t.token,t.chat_id,t.enabled
                       FROM outbox o JOIN source_messages m ON m.id=o.message_id
                       JOIN targets t ON t.platform=o.platform

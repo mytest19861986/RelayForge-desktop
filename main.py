@@ -1,4 +1,4 @@
-"""RelayForge 4.3.6 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.7 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -13,7 +13,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge import richtext, ai43, gemini431, ai_settings, ai436
+from relayforge import richtext, ai43, gemini431, ai_settings, ai436, style437
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -106,7 +106,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.6",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.7",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -164,6 +164,21 @@ class AIPreview(BaseModel):
     max_models:int=Field(default=6,ge=1,le=20)
     emoji:bool=False
     api_path:Literal["legacy","generateContent"]="legacy"
+
+class StyleAnalyze(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    name:str=Field(min_length=1,max_length=100)
+    channel:str=Field(default="",max_length=250)
+    count:Literal[30,120,300,500]=120
+    use_ai:bool=False
+    consent:bool=False
+
+class StyleEdit(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    name:str=Field(min_length=1,max_length=100)
+    key:Literal["media","brief","long","standard"]
+    instructions:str=Field(max_length=1000)
+    template:str=Field(max_length=1500)
 
 class GeminiScript(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -277,7 +292,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.6",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.7",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -412,6 +427,36 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             row=c.execute("SELECT msg_id,body,entities FROM source_messages WHERE epoch=? AND protected=0 AND eligible=1 AND media_kind<>'copy' AND body<>'' ORDER BY id DESC LIMIT 1",(service.db.get_setting('epoch'),)).fetchone()
         if not row:raise HTTPException(404,'نمونه متنی مجاز موجود نیست')
         return {'msg_id':row['msg_id'],'text':row['body'][:6000],'entities':richtext.load(row['body'],row['entities'])}
+
+    @app.get('/api/styles',dependencies=[Depends(auth)])
+    async def styles_list():return {'styles':style437.list_profiles(service.db)}
+
+    @app.get('/api/styles/{id}',dependencies=[Depends(auth)])
+    async def styles_get(id:str):
+        try:return style437.get(service.db,id)
+        except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/styles/analyze',dependencies=[Depends(auth)])
+    async def styles_analyze(data:StyleAnalyze):
+        try:
+            if not data.name.strip():raise ValueError('نام الگو لازم است')
+            if data.use_ai and not data.consent:raise ValueError('رضایت ارسال نمونه به Gemini لازم است')
+            if data.channel:
+                async with service.control:
+                    if service.engine.active:raise ValueError('برای تحلیل کانال دیگر ابتدا موتور را متوقف کنید')
+                    rows=await asyncio.wait_for(style437.remote_samples(service.engine.collector,data.channel,data.count),timeout=120)
+                source=str(style437.channel_ref(data.channel))
+            else:
+                rows=style437.local_samples(service.db,data.count);source='local archive'
+            result=await asyncio.wait_for(style437.analyze(service.db,rows,data.count,data.name,source,data.use_ai,data.consent),timeout=240)
+            return style437.save(service.db,result)
+        except TimeoutError:raise HTTPException(400,'زمان تحلیل پایان یافت؛ خودکار تکرار نمی‌شود') from None
+        except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/styles/{id}/edit',dependencies=[Depends(auth)])
+    async def styles_edit(id:str,data:StyleEdit):
+        try:return style437.edit(service.db,id,**data.model_dump())
+        except Exception as exc:raise safe_exception(exc) from None
 
     @app.post('/api/ai-lab/profile/{route}',dependencies=[Depends(auth)])
     async def ai_profile(route:str,data:AIProfile):
@@ -728,7 +773,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.6"}
+    async def health():return {"status":"running","version":"4.3.7"}
 
     return app
 
@@ -755,17 +800,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.6"); return
+        print("SELF TEST OK 4.3.7"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.6")
+            backups.pre_upgrade(data,"4.3.7")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.6")
-            print(f"RelayForge 4.3.6 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.7")
+            print(f"RelayForge 4.3.7 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

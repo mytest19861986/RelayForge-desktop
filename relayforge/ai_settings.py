@@ -26,7 +26,7 @@ def catalog(db,provider):
 
 def options(db,provider,kind):
     c=catalog(db,provider)
-    return c[kind] if c else LEGACY[provider][kind]
+    return c.get(kind,[]) if c else LEGACY[provider].get(kind,[])
 
 def check_model(db,provider,kind,model):
     if not ID.fullmatch(model) or model not in options(db,provider,kind):raise ValueError('مدل در فهرست این اتصال نیست؛ فهرست آنلاین را دریافت کنید')
@@ -37,7 +37,7 @@ def public(db):
         try:
             _,source=credential(db,p); c=catalog(db,p)
         except ValueError:source='invalid';c={}
-        out[p]={'key_source':source,'text':c.get('text',LEGACY[p]['text']),'tts':c.get('tts',LEGACY[p]['tts']),'loaded_at':c.get('loaded_at'),'online':bool(c)}
+        out[p]={'key_source':source,'text':c.get('text',LEGACY[p]['text']),'tts':c.get('tts',LEGACY[p]['tts']),'loaded_at':c.get('loaded_at'),'online':bool(c),'image':c.get('image',[])}
     return out
 
 def save_key(db,provider,operation,key):
@@ -58,7 +58,7 @@ async def refresh(db,provider):
     if not db.get_setting('ai43_enabled'):raise ValueError('ابتدا مجوز AI خارجی را فعال و ذخیره کنید')
     key,_=credential(db,provider)
     if not key:raise ValueError('ابتدا کلید API این سرویس را ذخیره کنید')
-    text=set();tts=set();page=None;seen=set()
+    text=set();tts=set();images=set();page=None;seen=set()
     url='https://api.openai.com/v1/models' if provider=='openai' else 'https://generativelanguage.googleapis.com/v1beta/models'
     headers={'Authorization':'Bearer '+key} if provider=='openai' else {'x-goog-api-key':key}
     try:
@@ -85,7 +85,8 @@ async def refresh(db,provider):
                         if re.match(r'^(gpt-|o[1-9](?:-|$)|chatgpt-)',lower) and not any(x in lower for x in ('audio','realtime','tts','image','transcribe','embedding','moderation','search','codex','instruct')):text.add(name)
                     elif 'generateContent' in row.get('supportedGenerationMethods',[]):
                         if 'tts' in lower:tts.add(name)
-                        elif lower.startswith('gemini-') and not any(x in lower for x in ('image','embedding','live','audio','robotics','computer-use','deep-research')):text.add(name)
+                        elif ('image' in lower and lower.startswith('gemini-')) or 'nano-banana' in lower:images.add(name)
+                        elif lower.startswith('gemini-') and not any(x in lower for x in ('image','embedding','live','audio','robotics','computer-use','deep-research','transcribe','omni','customtools','decision')):text.add(name)
                 page=obj.get('nextPageToken') if provider=='gemini' else None
                 if not page:break
                 if not isinstance(page,str) or page in seen:raise ValueError('صفحه‌بندی فهرست مدل نامعتبر است')
@@ -93,6 +94,6 @@ async def refresh(db,provider):
             else:raise ValueError('فهرست مدل‌ها بیش از حد طولانی است')
     except (httpx.HTTPError,KeyError,TypeError,json.JSONDecodeError,UnicodeError):raise ValueError('ارتباط یا پاسخ فهرست مدل‌ها نامعتبر است') from None
     if credential(db,provider)[0]!=key:raise ValueError('کلید هنگام دریافت فهرست تغییر کرد؛ دوباره تلاش کنید')
-    c={'text':sorted(text),'tts':sorted(tts),'loaded_at':int(time.time()),'fingerprint':fingerprint(key)}
+    c={'text':sorted(text),'tts':sorted(tts),'image':sorted(images),'loaded_at':int(time.time()),'fingerprint':fingerprint(key)}
     db.set_setting('ai44_catalog_'+provider,c)
     return public(db)[provider]

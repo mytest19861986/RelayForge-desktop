@@ -273,3 +273,6 @@ py -3.12 main.py --data-dir projects\education --port 8767
 - https://eitaayar.ir/
 - https://plustik.readthedocs.io/en/latest/api/plustik/client/index.html (منبع جامعه توسعه‌دهندگان، نه تأیید رسمی)
 - https://nuitka.net/user-documentation/common-issue-solutions.html
+
+
+نسخه 4.3.6: برای اجرای پروژه مستقل از START_PROJECT.bat با پورت متفاوت استفاده کنید. فهرست آنلاین Gemini را تازه‌سازی کنید. کلیپ محلی نیازمند FFmpeg و libx264 روی PATH است.

@@ -12,3 +12,6 @@
 
 /* 4.3 Rich Text + AI Studio */
 .ai-accent{color:#bca2ff}.rich-accent{color:#7edfc9}.ai-panel{border-color:#53466d;background:linear-gradient(135deg,#1c2540,#142132)}.field textarea{width:100%;min-width:0;resize:vertical;background:#0e1928;color:#eff7fa;border:1px solid #30475c;border-radius:11px;padding:12px 15px;font:inherit;font-size:14px;line-height:1.9}.field textarea:focus{outline:2px solid #668bc8;outline-offset:1px}.lab-output{white-space:pre-wrap;overflow-wrap:anywhere;max-height:380px;overflow:auto;min-height:80px;background:#0c1827;border:1px solid #34465a;border-radius:12px;padding:15px;font-family:Vazirmatn,Tahoma,sans-serif;font-size:13px;line-height:1.9;color:#e0edf5}.lab-comparison{margin-top:18px}.lab-comparison>div{min-width:0}.lab-comparison h3{font-size:14px;color:#a8c7e0}.ai-panel .backlog-option{margin:14px 0}.ai-panel .secondary-button{margin-top:8px}
+
+.media-preview {max-width:100%;max-height:480px;display:block;margin:12px auto;border-radius:12px;object-fit:contain;}
+.media-preview.hidden {display:none;}

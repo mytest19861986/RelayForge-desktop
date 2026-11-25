@@ -1,4 +1,4 @@
-RelayForge Studio 3.0.1
-Python 3.12 / FastAPI / Telethon / HTTPX / SQLite / Nuitka
-Source verification: 50 local tests passed
-Windows EXE: not built in Linux runtime
+RelayForge Studio 3.0.2
+Python 3.12/3.13 / FastAPI / Telethon / HTTPX / SQLite / Nuitka
+Patch: pytest Windows temp cleanup isolation via --basetemp
+Windows EXE: pending actual Windows compilation

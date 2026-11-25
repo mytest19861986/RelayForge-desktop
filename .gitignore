@@ -9,3 +9,4 @@ dist/
 data/
 *.session*
 *.exe
+.pytest_relayforge_*/

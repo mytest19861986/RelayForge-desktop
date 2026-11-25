@@ -1,15 +1,13 @@
 # RelayForge Desktop
 
-Local Windows dashboard and multi-messenger content relay (Telegram, Bale, Eitaa, Rubika, Soroush Plus).
+Local Windows dashboard and multi-messenger content relay for Telegram, Bale, Eitaa, Rubika and Soroush Plus. Desktop only; Cloud/SaaS is a separate project.
 
-## Repository status
+## Getting started
 
-This repository is being initialized from verified historical source archives through v4.3.2. The desktop source import is tracked separately from the Cloud/SaaS project. The source code is not yet present until the historical Git import is pushed. The upcoming Eitaa HTML delivery investigation is tracked separately; live provider acceptance is not implied by offline tests.
+Read `README_FA.md` and `VERSION.txt`. On Windows, Python 3.12 is the supported build environment. Run `RUN_FROM_SOURCE_WINDOWS.bat` first; use `BUILD_EXE_WINDOWS.bat` for the executable after local acceptance. Keep the dashboard local. Back up runtime `data` before upgrades.
 
-## Development conventions
+## Repository provenance
 
-Semantic Versioning; Conventional Commits; release tags `vMAJOR.MINOR.PATCH`; preserve history and never force-push. Windows Python 3.12 is the supported build environment. Do not commit runtime data, API credentials, session files, logs or build outputs.
+History is reconstructed from available historical ZIP snapshots, not original development commits. Each import is dated at the actual import time; archive hashes are recorded in commit bodies. Prior test counts are historical reports, not CI attestations. Live provider and Windows binary acceptance are separate from mocked tests.
 
-## Security
-
-This repository is public. Do not upload customer data, tokens or private backups. No open-source license has been granted by this repository initialization.
+Use Semantic Versioning, Conventional Commits, feature branches, reviewed pull requests and tagged releases. No license grant is implied by public visibility.

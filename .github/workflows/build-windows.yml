@@ -21,6 +21,6 @@ jobs:
       - name: Upload Windows standalone ZIP (no Python sources)
         uses: actions/upload-artifact@v4
         with:
-          name: RelayForge-v4.3.0-Windows-EXE
-          path: RelayForge_v4.3.0_WINDOWS_EXE.zip
+          name: RelayForge-Windows-EXE
+          path: RelayForge_v*_WINDOWS_EXE.zip
           if-no-files-found: error

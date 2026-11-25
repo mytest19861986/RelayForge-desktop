@@ -122,6 +122,7 @@ class RichPreview(BaseModel):
 
 class RichTest(ConfirmAction):
     mode:str=""
+    source_message_id:int|None=Field(default=None,ge=1)
 
 class AIEnable(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -240,7 +241,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.2",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.3",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -317,12 +318,25 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             try:
                 d=service.db.target(platform);p=d['provider'];mode=data.mode or (service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
                 if mode not in richtext.MODES[p]:raise ValueError('حالت قالب نامعتبر')
-                text='🔥 آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب\n#برنامه_نویسی'
-                spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
-                post=Post(text,entities=spans,format_mode=mode)
+                saved=(service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
+                if data.source_message_id is not None:
+                    if mode!=saved:raise ValueError('ابتدا روش انتخاب‌شده را ذخیره کنید؛ تست پست واقعی از تنظیم ذخیره‌شده استفاده می‌کند')
+                    with service.db.connection() as c:
+                        row=c.execute("SELECT *, id AS message_id FROM source_messages WHERE epoch=? AND msg_id=? AND protected=0 AND eligible=1 AND media_kind<>'copy'",(service.db.get_setting('epoch'),data.source_message_id)).fetchone()
+                    if not row:raise ValueError('پست مجاز در عملیات فعلی یافت نشد')
+                    row=dict(row);text=row['body'];spans=tuple(richtext.load(text,row['entities']))
+                    path=await service.engine.collector.get_media(row)
+                    if row['media_kind']!='text' and not path:raise ValueError('رسانه در دسترس نیست؛ تست ناقص انجام نمی‌شود')
+                    post=Post(text,row['media_kind'],path,spans,saved)
+                else:
+                    text='🔥 آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب\n#برنامه_نویسی'
+                    spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
+                    post=Post(text,entities=spans,format_mode=mode)
+                rendered,opts,warnings=richtext.render(p,post.text,post.entities,post.format_mode,bool(post.path))
+                diagnostic={'method':'sendFile' if post.path else 'sendMessage','mode':mode,'saved_mode':saved,'parse_mode':opts.get('parse_mode'),'bold_count':sum(x['type']=='bold' for x in spans),'html_bold_tags':rendered.count('<b>'),'warnings':warnings} if p=='eitaa' else {'mode':mode,'saved_mode':saved,'warnings':warnings}
                 remote=await service.engine.splus.send(platform,d['chat_id'],post) if p=='soroush' and d['token']==marker(platform) else await send(p,d['token'],d['chat_id'],post)
                 service.db.event('INFO',platform,'تست قالب‌بندی ارسال شد؛ نمایش در پیام‌رسان را دستی بررسی کنید')
-                return {'ok':True,'remote_id':str(remote),'note':'نمایش بولد را در برنامه مقصد بررسی کنید'}
+                return {'ok':True,'remote_id':str(remote),'note':'نمایش بولد را در برنامه مقصد بررسی کنید'+('؛ روش انتخابی هنوز ذخیره نشده است' if mode!=saved else ''),'diagnostic':diagnostic}
             except Exception as exc:raise safe_exception(exc) from None
 
     @app.get('/api/ai-lab',dependencies=[Depends(auth)])
@@ -635,7 +649,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.2"}
+    async def health():return {"status":"running","version":"4.3.3"}
 
     return app
 
@@ -662,16 +676,16 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.2"); return
+        print("SELF TEST OK 4.3.3"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.2")
+            backups.pre_upgrade(data,"4.3.3")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.2")
+            backups.mark_version(data,"4.3.3")
             print(f"RelayForge 4.3 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading

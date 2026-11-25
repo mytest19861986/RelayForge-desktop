@@ -97,7 +97,11 @@ class Engine:
                     return
                 spans=load(job["body"],job.get("entities","[]"))
                 mode=(self.db.get_setting("rich43_modes") or {}).get(provider(platform),DEFAULTS.get(provider(platform),"plain"))
-                _,_,warnings=render(provider(platform),job["body"],spans,mode,bool(path))
+                formatted,options,warnings=render(provider(platform),job["body"],spans,mode,bool(path))
+                if provider(platform)=="eitaa":
+                    method="sendFile" if path else "sendMessage"
+                    bold=sum(x["type"]=="bold" for x in spans)
+                    self.db.event("INFO",platform,f"#{did} | {method} | mode={mode} | parse_mode={options.get('parse_mode','none')} | bold={bold} | tags={formatted.count('<b>')} | chars={len(formatted)}")
                 for warning in warnings:self.db.event("WARN",platform,f"#{did}: {warning}")
                 post=Post(job["body"],job["media_kind"],path,tuple(spans),mode)
                 if provider(platform)=="soroush" and is_user(job["token"]):
@@ -124,5 +128,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"4.3.2","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.3.3","source_state":self.collector.state,"engine_running":self.active})
         return result

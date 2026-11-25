@@ -2,6 +2,13 @@
 
 Historical snapshot imports, not original commit history.
 
+## 4.3.9
+
+- Four rewrite freedom levels: strict, balanced, creative and completely free.
+- Improve fact comparison and candidate visibility; free mode skips the fact guard.
+- Delivered archive SHA-256: `176d5a4aea271671b8a3482cad9672d74f76654449337fc11b79bb368d8bb25c`.
+- Delivered test report: 231 tests passed; Windows and live providers pending.
+
 ## 4.3.8
 
 - Simplify local test startup: remove manual dashboard login and project/port prompts.

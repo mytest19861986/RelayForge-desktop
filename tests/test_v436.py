@@ -125,7 +125,7 @@ def test_project_isolation(tmp_path):
     for app,port in ((a1,8766),(a2,8767)):
         base=f'http://127.0.0.1:{port}';h={'Origin':base,'X-Studio-Key':app.state.service.admin_key}
         with TestClient(app,base_url=base,client=('127.0.0.1',50000)) as c:
-            assert c.get('/api/health').json()['version']=='4.3.8'
+            assert c.get('/api/health').json()['version']=='4.3.9'
             assert c.post('/api/ai-lab/preferences',headers=h,json={'model_mode':'quality','max_models':3}).status_code==200
             assert c.get('/api/ai-lab',headers=h).json()['preferences']['model_mode']=='quality'
-            assert 'v4.3.8' in c.get('/').text
+            assert 'v4.3.9' in c.get('/').text

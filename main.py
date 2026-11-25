@@ -1,4 +1,4 @@
-"""RelayForge 4.3.8 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.9 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -110,7 +110,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.8",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.9",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -167,6 +167,7 @@ class AIPreview(BaseModel):
     model_mode:Literal["manual","economy","quality"]="manual"
     max_models:int=Field(default=6,ge=1,le=20)
     emoji:bool=False
+    fact_mode:Literal["strict","balanced","creative","free"]="strict"
     api_path:Literal["legacy","generateContent"]="legacy"
 
 class StyleAnalyze(BaseModel):
@@ -296,7 +297,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.8",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.9",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -474,13 +475,13 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.post('/api/ai-lab/preview',dependencies=[Depends(auth)])
     async def ai_preview(data:AIPreview):
-        if any(not x.strip() or len(x)>200 for x in data.profile.locked):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
+        if data.fact_mode!='free' and any(not x.strip() or len(x)>200 for x in data.profile.locked):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
         try:
             if data.provider=="gemini" and (data.api_path=="generateContent" or data.model_mode!="manual"):
-                return await asyncio.wait_for(ai436.preview(service.db,data.text,data.profile.model_dump(),data.consent,data.model,data.model_mode,data.max_models,data.emoji),timeout=240)
+                return await asyncio.wait_for(ai436.preview(service.db,data.text,data.profile.model_dump(),data.consent,data.model,data.model_mode,data.max_models,data.emoji,data.fact_mode),timeout=240)
             profile=data.profile.model_dump()
             if data.emoji and data.provider in ("openai","gemini"):profile["instructions"]+=" Add a few relevant Unicode emoji."
-            return await ai43.preview(service.db,data.text,profile,data.provider,data.consent,data.model)
+            return await ai43.preview(service.db,data.text,profile,data.provider,data.consent,data.model,data.fact_mode)
         except TimeoutError:raise HTTPException(400,'زمان پردازش پایان یافت؛ نتیجه نامشخص') from None
         except Exception as exc:raise safe_exception(exc) from None
 
@@ -777,7 +778,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.8"}
+    async def health():return {"status":"running","version":"4.3.9"}
 
     return app
 
@@ -804,17 +805,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.8"); return
+        print("SELF TEST OK 4.3.9"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.8")
+            backups.pre_upgrade(data,"4.3.9")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.8")
-            print(f"RelayForge 4.3.8 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.9")
+            print(f"RelayForge 4.3.9 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard opens automatically; use OPEN_DASHBOARD.bat if needed.",flush=True)
             import threading
             if not opt.no_browser and stop is None:

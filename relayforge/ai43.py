@@ -10,7 +10,7 @@ from typing import Protocol
 import httpx
 from . import gemini431 as gemini, ai_settings
 
-PROMPT_VERSION='4.3.10-lab-1'
+PROMPT_VERSION='4.3.11-lab-1'
 FACT_MODES=('strict','balanced','creative','free')
 TONES=('formal','friendly','news','educational','sales','concise','custom')
 FIELDS={'body','brand','title','destination','hashtags'}

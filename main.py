@@ -1,4 +1,4 @@
-"""RelayForge 4.3.10 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.11 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time, json
 from relayforge import backup42 as backups
@@ -14,7 +14,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge import richtext, ai43, gemini431, ai_settings, ai436, style437, publish410
+from relayforge import richtext, ai43, gemini431, ai_settings, ai436, style437, publish410, media411
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -110,7 +110,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3.10",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.11",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -201,11 +201,20 @@ class AIDiagnostic(BaseModel):
     model:str=Field(max_length=200)
     consent:bool=False
 
+class MediaReference(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    mime:Literal['image/png','image/jpeg']
+    data:str=Field(max_length=5592408)
+
 class AIMedia(BaseModel):
     model_config=ConfigDict(extra="forbid")
     text:str=Field(min_length=1,max_length=4000)
     model:str=Field(max_length=200)
-    kind:Literal["image","sticker","clip"]="image"
+    kind:Literal["image","sticker","clip","infographic"]="image"
+    model_mode:Literal["manual","custom","economy","quality"]="manual"
+    aspect_ratio:Literal["auto","1:1","16:9","9:16","4:3","3:4","3:2","2:3"]="auto"
+    image_size:Literal["auto","1K","2K","4K"]="auto"
+    reference:MediaReference|None=None
     style:str=Field(default="editorial illustration",max_length=300)
     consent:bool=False
 
@@ -299,7 +308,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.10",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.11",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -495,6 +504,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             if footer and not result.get('blocked'):
                 result['output']=publish410.append_footer(result['output'],footer)
                 result['candidate']=result['output']
+            result['structure_review']=media411.structural_review(data.text,result['output'])
             return result
         except TimeoutError:raise HTTPException(400,'زمان پردازش پایان یافت؛ نتیجه نامشخص') from None
         except Exception as exc:raise safe_exception(exc) from None
@@ -557,8 +567,17 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         except Exception as exc:raise safe_exception(exc) from None
 
     @app.post('/api/ai-lab/media',dependencies=[Depends(auth)])
-    async def ai_media(data:AIMedia):
+    async def ai_media(request:Request):
+        raw=bytearray()
+        async for chunk in request.stream():
+            if len(raw)+len(chunk)>6*1024*1024:raise HTTPException(413,'حجم درخواست رسانه بیش از حد مجاز')
+            raw.extend(chunk)
+        try:data=AIMedia.model_validate_json(raw)
+        except ValueError:raise HTTPException(422,'درخواست رسانه نامعتبر است') from None
         try:return await asyncio.wait_for(ai436.image(service.db,**data.model_dump()),timeout=180)
+        except ai436.ProviderStatus as exc:
+            if exc.status==429:raise HTTPException(429,str(exc)) from None
+            raise safe_exception(exc) from None
         except TimeoutError:raise HTTPException(400,'زمان ساخت رسانه پایان یافت؛ درخواست تکرار نمی‌شود') from None
         except Exception as exc:raise safe_exception(exc) from None
 
@@ -835,7 +854,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.10"}
+    async def health():return {"status":"running","version":"4.3.11"}
 
     return app
 
@@ -862,17 +881,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.10"); return
+        print("SELF TEST OK 4.3.11"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.10")
+            backups.pre_upgrade(data,"4.3.11")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.10")
-            print(f"RelayForge 4.3.10 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.11")
+            print(f"RelayForge 4.3.11 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard opens automatically; use OPEN_DASHBOARD.bat if needed.",flush=True)
             import threading
             if not opt.no_browser and stop is None:

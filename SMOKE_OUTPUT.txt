@@ -1,4 +1,4 @@
-HTTP SMOKE OK 4.3.10 (no real provider sends; rich text + AI lab + identity + publish targets)
-RelayForge 4.3.10 | http://127.0.0.1:57941
+HTTP SMOKE OK 4.3.11 (no real provider sends; rich text + AI lab + identity + publish targets)
+RelayForge 4.3.11 | http://127.0.0.1:60743
 Dashboard opens automatically; use OPEN_DASHBOARD.bat if needed.
 

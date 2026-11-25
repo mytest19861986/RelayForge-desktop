@@ -47,9 +47,11 @@ def save_key(db,provider,operation,key):
         encrypted=db.secret(key)
     elif operation=='remove':encrypted=''
     else:raise ValueError('عملیات نامعتبر')
-    # Update credentials and invalidate model list atomically.
+    # A catalog is always scoped to the effective key fingerprint.
+    cached=db.get_setting('ai44_catalog_'+provider) or {}
+    if operation!='save' or cached.get('fingerprint')!=fingerprint(key):cached={}
     with db.connection() as c:
-        for k,v in [('ai44_key_'+provider,encrypted),('ai44_catalog_'+provider,{})]:
+        for k,v in [('ai44_key_'+provider,encrypted),('ai44_catalog_'+provider,cached)]:
             c.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',(k,json.dumps(v)))
 
 def daily_limit(db):return int(db.get_setting('ai44_daily_limit') or 10)

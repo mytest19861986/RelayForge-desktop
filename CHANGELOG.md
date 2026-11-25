@@ -2,6 +2,14 @@
 
 Historical snapshot imports, not original commit history.
 
+## 4.3.11
+
+- Image-model selection, reference image, aspect ratio and resolution; improved Gemini quota diagnostics.
+- Combine two writing styles, structured rewrite evaluation and media statistics.
+- Include next-release roadmap and test report.
+- Delivered archive SHA-256: `d3755d700cfa7b8fc68a68e9f3ff23edf40eabf9904bd3f3114cacbe917e6470`.
+- Delivered test report: 263 tests passed; Windows and live provider acceptance pending.
+
 ## 4.3.10
 
 - Editable content drafts, authorized destination selection and test publishing.

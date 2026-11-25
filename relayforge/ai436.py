@@ -3,14 +3,14 @@ from __future__ import annotations
 import asyncio, base64, json, re, time, shutil, tempfile, subprocess, random, math
 from pathlib import Path
 import httpx
-from . import ai_settings as settings, gemini431 as old
+from . import ai_settings as settings, gemini431 as old, media411
 
 BASE='https://generativelanguage.googleapis.com/v1beta/models/'
 MODES=('manual','economy','quality')
 class ProviderStatus(ValueError):
-    def __init__(self,status,delay=None):
+    def __init__(self,status,delay=None,hint=None):
         self.status=status;self.delay=delay
-        super().__init__(f'Gemini HTTP {status}؛ '+{503:'ظرفیت موقت سرویس',404:'مدل در دسترس نیست',429:'سهمیه یا نرخ درخواست',400:'مدل یا ساختار درخواست نامعتبر',401:'کلید نامعتبر',403:'دسترسی مجاز نیست'}.get(status,'پاسخ ناموفق'))
+        super().__init__(f'Gemini HTTP {status}؛ '+{503:'ظرفیت موقت سرویس',404:'مدل در دسترس نیست',429:'سهمیه یا نرخ درخواست',400:'مدل یا ساختار درخواست نامعتبر',401:'کلید نامعتبر',403:'دسترسی مجاز نیست'}.get(status,'پاسخ ناموفق')+('؛ '+hint if hint else ''))
 
 def rank(model):
     # Approximate product tier, not a benchmark or cost guarantee.
@@ -29,15 +29,23 @@ def ordered(db,mode,model,maximum=6):
     if not models:raise ValueError('مدل متنی قابل انتخاب نیست')
     return sorted(models,key=rank,reverse=mode=='quality')[:maximum]
 
-async def request(db,key,model,prompt,config,*,limit=256*1024,timeout=40):
+async def request(db,key,model,prompt,config,*,limit=256*1024,timeout=40,reference=None):
     if not settings.ID.fullmatch(model):raise ValueError('مدل نامعتبر است')
     if old.external_key(db,True)!=key:raise ValueError('کلید یا مجوز تغییر کرد')
     old.reserve(db)
-    payload={'contents':[{'parts':[{'text':prompt}]}],'generationConfig':config}
+    payload={'contents':[{'parts':[{'text':prompt}]+([reference] if reference else [])}],'generationConfig':config}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout,connect=10),follow_redirects=False,trust_env=False) as client:
             async with client.stream('POST',BASE+model+':generateContent',headers={'x-goog-api-key':key},json=payload) as resp:
-                if resp.status_code!=200:raise ProviderStatus(resp.status_code,resp.headers.get('Retry-After'))
+                if resp.status_code!=200:
+                    hint=None
+                    if resp.status_code==429:
+                        raw_error=bytearray()
+                        async for chunk in resp.aiter_bytes():
+                            if len(raw_error)+len(chunk)>32768:break
+                            raw_error.extend(chunk)
+                        hint=media411.quota_hint(raw_error,resp.headers.get('Retry-After'))
+                    raise ProviderStatus(resp.status_code,resp.headers.get('Retry-After'),hint)
                 raw=bytearray()
                 async for chunk in resp.aiter_bytes():
                     raw.extend(chunk)
@@ -108,14 +116,31 @@ async def podcast(db,text,consent,model,mode,maximum):
     return {'script':script,'blocked':bool(m or a),'missing':m,'added':a,'model_used':used,'attempts':trace,'review_required':True,'published':False}
 
 MAX_IMAGE=8*1024*1024
-async def image(db,text,consent,model,kind,style):
-    key=old.external_key(db,consent);settings.check_model(db,'gemini','image',model)
-    if not settings.catalog(db,'gemini'):raise ValueError('ابتدا فهرست آنلاین مدل‌ها را دریافت کنید')
-    if kind not in ('image','sticker','clip'):raise ValueError('نوع رسانه نامعتبر')
+async def image(db,text,consent,model,kind,style,model_mode='manual',aspect_ratio='auto',image_size='auto',reference=None):
+    key=old.external_key(db,consent)
+    if model_mode=='manual':settings.check_model(db,'gemini','image',model)
+    elif model_mode=='custom':
+        if not settings.ID.fullmatch(model):raise ValueError('شناسه مدل نامعتبر')
+    elif model_mode in ('economy','quality'):
+        models=settings.catalog(db,'gemini').get('image',[])
+        if not models:raise ValueError('ابتدا فهرست آنلاین مدل‌های تصویر را دریافت کنید')
+        model=sorted(models,key=rank,reverse=model_mode=='quality')[0]
+    else:raise ValueError('حالت انتخاب مدل نامعتبر')
+    if kind not in ('image','sticker','clip','infographic'):raise ValueError('نوع رسانه نامعتبر')
+    if aspect_ratio not in media411.RATIOS or image_size not in media411.SIZES:raise ValueError('ابعاد تصویر نامعتبر')
+    ref=media411.reference_part(reference)
+    if not text.strip():raise ValueError('موضوع تصویر خالی است')
     if kind=='clip' and not shutil.which('ffmpeg'):raise ValueError('برای ساخت کلیپ محلی ابتدا FFmpeg را روی PATH نصب کنید؛ هیچ درخواست API ارسال نشد')
     instruction='Create a simple expressive sticker-like illustration, centered on a plain background, no text.' if kind=='sticker' else 'Create an editorial illustration for this content, no text or invented factual claims. Clearly illustrative, not documentary evidence.'
+    if kind=='infographic':instruction='Create a readable Persian infographic using only facts supplied in the topic. Do not invent figures, names or sources. Preserve spelling and right-to-left layout. Require human review.'
+    if ref:instruction+=' Use the supplied reference image as visual guidance or edit it according to the topic.'
     prompt=instruction+' Style: '+style+' Untrusted topic: '+json.dumps(text,ensure_ascii=False)
-    parts=await request(db,key,model,prompt,{'responseModalities':['TEXT','IMAGE']},limit=MAX_IMAGE*4//3+1024*1024,timeout=100)
+    config={'responseModalities':['TEXT','IMAGE']}
+    image_config={}
+    if aspect_ratio!='auto':image_config['aspectRatio']=aspect_ratio
+    if image_size!='auto':image_config['imageSize']=image_size
+    if image_config:config['imageConfig']=image_config
+    parts=await request(db,key,model,prompt,config,limit=MAX_IMAGE*4//3+1024*1024,timeout=100,reference=ref)
     for p in parts:
         obj=p.get('inlineData') or p.get('inline_data') or {};mime=obj.get('mimeType') or obj.get('mime_type')
         if mime not in ('image/png','image/jpeg'):continue

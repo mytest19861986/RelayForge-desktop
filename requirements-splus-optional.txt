@@ -1,0 +1,2 @@
+# Experimental third-party GPLv3 package; install only after reviewing its license/security.
+SPlusthon==1.1.4

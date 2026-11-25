@@ -211,6 +211,7 @@ class Database:
                 d["counts"]={r["status"]:r["n"] for r in c.execute("SELECT status,COUNT(*) n FROM outbox WHERE platform=? GROUP BY status",(platform,))}
                 d["sent_count"]=d["counts"].get("sent",0)
                 d["archive_refs"]=c.execute("SELECT COUNT(*) FROM source_messages WHERE epoch=? AND media_kind='copy'",(self.get_setting("epoch"),)).fetchone()[0] if d["provider"]!="telegram" else 0
+        if public:d["auth_mode"]="user" if d["provider"]=="soroush" and self.reveal(d["token"]).startswith("user-session:") else "bot"
         d["token"] = bool(d["token"]) if public else self.reveal(d["token"])
         return d
 
@@ -440,3 +441,30 @@ class Database:
             total=c.execute("SELECT COUNT(*) FROM ("+sql+where+")",args).fetchone()[0]
             rows=[dict(r) for r in c.execute(sql+where+order+" LIMIT ? OFFSET ?",args+[limit,offset])]
         return {"total":total,"rows":rows}
+
+    def uncertain_rows(self):
+        with self.connection() as c:
+            rows=[dict(r) for r in c.execute('''SELECT o.id,o.platform,m.msg_id,o.detail,o.updated,
+                COALESCE(NULLIF(o.target_chat,''),t.chat_id) chat_id,m.epoch,t.archived
+                FROM outbox o JOIN source_messages m ON m.id=o.message_id JOIN targets t ON t.platform=o.platform
+                WHERE o.status='uncertain' ORDER BY o.id LIMIT 500''')]
+            count=c.execute("SELECT COUNT(*) FROM outbox WHERE status='uncertain'").fetchone()[0]
+        return {'total':count,'rows':rows}
+
+    def resolve_uncertain_bulk(self, ids, action, all_rows=False):
+        if action not in ('retry','mark_sent','skip'):raise ValueError('اقدام نامعتبر')
+        ids=list(dict.fromkeys(ids))
+        with self.connection() as c:
+            if c.execute("SELECT 1 FROM outbox WHERE status='sending'").fetchone():raise ValueError('ابتدا ارسال در جریان را متوقف کنید')
+            if all_rows:
+                if action!='skip':raise ValueError('تعیین تکلیف همه فقط برای رد کردن مجاز است')
+                rows=c.execute("SELECT id,platform FROM outbox WHERE status='uncertain'").fetchall()
+            else:
+                if not ids or len(ids)>500:raise ValueError('۱ تا ۵۰۰ پیام را انتخاب کنید')
+                rows=c.execute('''SELECT o.id,o.platform FROM outbox o JOIN source_messages m ON m.id=o.message_id
+                    JOIN targets t ON t.platform=o.platform WHERE o.status='uncertain' AND o.id IN ('''+','.join('?' for _ in ids)+')'+(' AND m.epoch=? AND t.archived=0' if action=='retry' else ''),ids+([self.get_setting('epoch')] if action=='retry' else [])).fetchall()
+                if len(rows)!=len(ids):raise ValueError('بعضی پیام‌ها دیگر قابل تعیین تکلیف نیستند؛ فهرست را تازه کنید')
+            status={'retry':'queued','mark_sent':'sent','skip':'skipped'}[action]
+            c.executemany('UPDATE outbox SET status=?,detail=?,updated=? WHERE id=?',[(status,'تعیین تکلیف گروهی کاربر: '+action,now(),r['id']) for r in rows])
+        self.event('WARN','system',f'{len(rows)} ارسال نامطمئن به صورت گروهی {action} شد؛ سابقه محفوظ است')
+        return len(rows)

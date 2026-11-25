@@ -24,7 +24,7 @@ def safe_description(obj, token=""):
     return " ".join(desc.split())[:250]
 
 def validate_token(token):
-    if not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",token or ""): raise Rejected("قالب توکن API نامعتبر")
+    if (token or "").startswith("user-session:") or not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",token or ""): raise Rejected("قالب توکن API نامعتبر")
 
 @dataclass(frozen=True)
 class Post:
@@ -57,7 +57,7 @@ async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, fi
     # Never include the URL or raw body (contains token or private data).
     path=urlsplit(url).path
     method=path.rsplit("/",1)[-1]
-    if method not in {"getMe","getChat","getChatMember","sendMessage","sendPhoto","sendVideo","sendAudio","sendVoice","sendDocument","sendAnimation","sendFile","copyMessage","requestSendFile"}: method="upload"
+    if method not in {"getMe","getChat","getChatMember","getUpdates","sendMessage","sendPhoto","sendVideo","sendAudio","sendVoice","sendDocument","sendAnimation","sendFile","copyMessage","requestSendFile"}: method="upload"
     token=path.rsplit("/",2)[-2] if "/" in path else ""
     if token.startswith("bot"): token=token[3:]
     try: obj=response.json()
@@ -83,6 +83,9 @@ async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, fi
             except (ValueError,TypeError,AttributeError): delay=30
             raise RetryLater(delay)
         code=str(code) if isinstance(code,int) else str(response.status_code)
+        if "status" in obj and isinstance(obj["status"],str):
+            status=re.sub(r"[^A-Za-z0-9_-]","",obj["status"])[:40]
+            if status: suffix=" | status="+status+suffix
         raise Rejected(f"{method}: API مقصد درخواست را رد کرد (code {code})"+suffix)
     return obj
 
@@ -136,7 +139,7 @@ async def send(platform: str, token: str, chat_id: str, post: Post):
 async def _send_rubika(client,address,chat_id,post):
     if not post.path:
         return _result("rubika",await _post(client,address+"sendMessage",json={"chat_id":chat_id,"text":post.text}))
-    kind = {"photo":"Image","video":"Video","audio":"Music","voice":"Voice","animation":"Gif","document":"Document"}.get(post.kind,"Document")
+    kind = {"photo":"Image","video":"Video","audio":"Music","voice":"Voice","animation":"Gif","document":"File"}.get(post.kind,"File")
     init = await _post(client,address+"requestSendFile",json={"type":kind})
     _result("rubika",init,False)
     data = init.get("data") if isinstance(init.get("data"),dict) else init
@@ -163,6 +166,15 @@ async def check_token(platform,token):
 
 async def check_target(platform,token,chat_id):
     validate_token(token)
+    if platform=="rubika":
+        async with httpx.AsyncClient(trust_env=True) as client:
+            base=BASE[platform]+token+"/"
+            _result(platform,await _post(client,base+"getMe"),False)
+            data=_result(platform,await _post(client,base+"getChat",json={"chat_id":chat_id}),False)
+        chat=data.get("chat",data) if isinstance(data,dict) else {}
+        if not isinstance(chat,dict) or str(chat.get("chat_id",""))!=chat_id:raise Rejected("شناسه کانال روبیکا تأیید نشد؛ از تشخیص شناسه استفاده کنید")
+        if str(chat.get("chat_type",chat.get("type",""))).lower()!="channel":raise Rejected("مقصد روبیکا باید کانال باشد")
+        return {"ok":True,"chat_id":chat_id,"note":"شناسه کانال تأیید شد؛ برای مجوز انتشار پیام آزمایشی بفرستید"}
     if platform not in ("telegram","bale"): return await check_token(platform,token)
     address=BASE[platform]+token+"/"
     async with httpx.AsyncClient(trust_env=True) as client:
@@ -186,3 +198,21 @@ async def copy_telegram(token,source,chat_id,msg_id):
         except Uncertain: raise RetryLater(30) from None
         if src.get("has_protected_content") or src.get("id")==dst.get("id"): raise Rejected("مبدأ محافظت‌شده یا برابر مقصد است")
         return _result("telegram",await _post(client,address+"copyMessage",json={"chat_id":chat_id,"from_chat_id":source,"message_id":msg_id}))
+
+async def discover_rubika(token):
+    """Only channel IDs from bot updates, verified via getChat. No guessed IDs."""
+    validate_token(token);address=BASE['rubika']+token+'/'
+    async with httpx.AsyncClient(trust_env=True) as client:
+        payload=_result('rubika',await _post(client,address+'getUpdates',json={'limit':50}),False)
+        rows=payload.get('updates',[]) if isinstance(payload,dict) else []
+        ids=list(dict.fromkeys(str(x.get('chat_id','')) for x in rows if isinstance(x,dict)))[:50]
+        result=[]
+        for cid in ids:
+            if not cid or len(cid)>200:continue
+            try:
+                info=_result('rubika',await _post(client,address+'getChat',json={'chat_id':cid}),False)
+                chat=info.get('chat',info) if isinstance(info,dict) else {}
+                if isinstance(chat,dict) and str(chat.get('chat_type',chat.get('type',''))).lower()=='channel' and str(chat.get('chat_id',''))==cid:
+                    result.append({'chat_id':cid,'title':str(chat.get('title',''))[:200]})
+            except Rejected:continue
+        return result

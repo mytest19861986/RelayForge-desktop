@@ -1,12 +1,11 @@
-# RelayForge 4.1.0 — test evidence
+# RelayForge 4.2.0 — گزارش کنترل کیفیت
 
-Baseline: RelayForge_v4.0.0_FULL_BUILD_R2.zip, extracted locally. No live VPS, repository, or account data was modified.
-
-- 75 original tests retained and passed; 17 new v4.1 tests passed (92 total). See TEST_OUTPUT.txt. New tests: soft deletion and atomic bulk removal, protection of uncertain sends, clearing one queue, re-add deduplication, historical chat labels, filtered/paginated reports, BotFather archive warning, explicit same-channel archive upgrade, mocked archive delivery to Bale/Eitaa while preserving Telegram delivery history, mocked photo upload, provider error redaction, non-JSON HTTP 404 handling, HTTP-200 API rate limiting, pre-send media retry, auth and cross-origin protection, confirmed test send, pause/clear, archive rescan.
-- Actual local FastAPI HTTP subprocess smoke: PASS, see SMOKE_OUTPUT.txt. Health 4.1.0, HTML/CSS/JS, unauthorized and authorized status. Node syntax check and Python compile check PASS.
-- All provider HTTP calls in tests are mocked; the Telethon archive scan and media download tests use fake clients/messages. Telethon itself is not installed in this Linux test environment. Account login, actual archive retrieval, provider permissions and real sends remain unverified, including Bale media API behavior. Do not claim live delivery.
-- UI HTML/JS modified; full browser click-through and visual acceptance not performed. The old screenshots from v4.0 are excluded from the new distribution to avoid presenting them as current.
-- Windows 10/11/Server 2019 EXE compilation, runtime smoke, Task Scheduler and service are not tested here. The existing Windows build preflight, Python 3.12, Nuitka 4.3.1, full pytest gate and post-build binary HTTP smoke are retained; Windows workflow included, not executed. Source ZIP contains no compiled executable.
-- Remaining limitations inherited: no central multi-project dashboard, complete media albums unsupported, no automatic media eviction, no daily-clock schedule, and provider-specific limitations. Bot API history can only direct-copy to Telegram; cross-platform archive requires a permitted user session. Report retention grows with use; monitor disk. Pagination and export may shift during live traffic; stop engine for stable export. Historical events already pruned in prior versions cannot be restored. Existing pre-v4.1 rows lack recorded destination chat snapshots, so report falls back to route's current chat ID where necessary.
-
-Release status: locally verified candidate; live provider and Windows release gates remain open.
+- پایه: ZIP واقعی v4.1.0 FULL؛ 92 تست پیشین بدون حذف حفظ شدند.
+- آزمون محلی Linux / Python 3.13.5: 111 passed (19 موارد جدید؛ پارامترهای مستقل نیز شمارش شده‌اند).
+- اجرای واقعی main.py در subprocess، بررسی health/version، فایل‌های استاتیک، 401 بدون کلید و status احرازشده: PASS.
+- `node --check web/main.js` و `compileall`: PASS.
+- پشتیبان رمزگذاری‌شده، بازیابی میان دو نصب با کلید متفاوت، حالت تنظیمات بدون تاریخچه، رد رمز اشتباه و دستکاری و مسیر نامعتبر، حفاظت قبل از reset، زمان‌بندی روزانه، بلوک عملیات هنگام restore، شناسه روبیکا و مجوز/ارسال سروش (mock): PASS.
+- آزمون مستقیم مرورگر Chromium روی localhost: blocked (`ERR_BLOCKED_BY_ADMINISTRATOR`)، نه PASS. پیش‌نمایش فقط رندر ایستای HTML/CSS است.
+- Windows Python 3.12 / Nuitka 4.3.1، EXE، Task Scheduler و Service: این نسخه در Windows اجرا نشده است. تست‌های ویندوز و smoke خود EXE در BUILD_EXE_WINDOWS.bat اجباری هستند.
+- API پیام‌رسان‌ها: بدون ارسال واقعی یا ورود حساب. افزونه SPlusthon اختیاری و فقط source runtime، بررسی امنیت/مجوز ثالث و سازگاری زنده باقی است؛ تست‌ها از client شبیه‌سازی‌شده استفاده کرده‌اند. کتابخانه نصب نشده است.
+- محدودیت‌ها: سقف پشتیبان 128 MiB، پشتیبان کامل فقط موتور متوقف، بازیابی با restart و مقصد خاموش، رمز پنل فعلی حفظ می‌شود، گزارش‌های قبلی به restored_logs منتقل می‌شوند. در بازیابی از snapshot قدیمی ممکن است ارسال تکراری رخ دهد؛ بررسی دستی قبل از شروع لازم است. گزینه‌های پیشین که عملی نشده بودند (پنل مرکزی چند پروژه، ساعت مشخص روزانه ارسال، آلبوم کامل، پاک‌سازی رسانه و نصب سرویس از داشبورد) در این نسخه تکمیل نشده‌اند.

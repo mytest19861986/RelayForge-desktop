@@ -4,6 +4,7 @@ import asyncio, logging
 from .database import Database, PLATFORMS, provider
 from .gateways import Post, send, Rejected, Uncertain, NotSupported, RetryLater, copy_telegram, check_target
 from .source import Collector, SourceUnavailable
+from .splus_user import Accounts, is_user, marker
 
 log=logging.getLogger("relayforge.engine")
 
@@ -11,6 +12,7 @@ class Engine:
     def __init__(self,db:Database):
         self.db=db
         self.collector=Collector(db)
+        self.splus=Accounts(db.root)
         self.active=False
         self.tasks=[]
         self.workers={}
@@ -92,7 +94,11 @@ class Engine:
                 except Exception as exc:
                     self.db.defer_delivery(did,platform,30,"خطای دریافت رسانه پیش از ارسال: "+type(exc).__name__)
                     return
-                remote=await send(provider(platform),job["token"],job["chat_id"],Post(job["body"],job["media_kind"],path))
+                post=Post(job["body"],job["media_kind"],path)
+                if provider(platform)=="soroush" and is_user(job["token"]):
+                    if job["token"]!=marker(platform):raise Rejected("نشست مقصد سروش نامعتبر")
+                    remote=await self.splus.send(platform,job["chat_id"],post)
+                else:remote=await send(provider(platform),job["token"],job["chat_id"],post)
         except RetryLater as exc:
             self.db.defer_delivery(did,platform,exc.delay,"اتصال موقت یا محدودیت نرخ؛ تلاش مجدد امن")
             return
@@ -113,5 +119,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"4.1.0","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.2.0","source_state":self.collector.state,"engine_running":self.active})
         return result

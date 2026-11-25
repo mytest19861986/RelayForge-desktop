@@ -1,6 +1,8 @@
-"""RelayForge 4.1 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.2 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
-import argparse, asyncio, contextlib, logging, os, secrets, sys, webbrowser, time
+import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
+from relayforge import backup42 as backups
+from relayforge.splus_user import is_user, marker
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Literal
@@ -11,7 +13,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater
+from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
 PORT=8765
@@ -103,10 +105,33 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.1",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.2",min_length=1,max_length=500)
+
+class SplusLogin(BaseModel):
+    phone:str=Field(default="",max_length=25)
+    code:str=Field(default="",max_length=20)
+    password:str=Field(default="",max_length=256)
+
+class SplusSelect(ConfirmAction):
+    chat_id:str=Field(min_length=1,max_length=200)
+
+class BackupIn(BaseModel):
+    mode:Literal["full","settings","database"]="full"
+    password:str=Field(min_length=12,max_length=256)
+
+class AutoBackupIn(BaseModel):
+    enabled:bool
+    mode:Literal["database","settings","full"]="database"
+    password:str=Field(default="",max_length=256)
+
+class BulkResolve(ConfirmAction):
+    ids:list[int]=Field(default_factory=list,max_length=500)
+    all_rows:bool=False
+    action:Literal["retry","mark_sent","skip"]
 
 class ResetConfirm(BaseModel):
     ticket:str
+    skip_uncertain:bool=False
 
 class VerifyCode(BaseModel):
     code:str=""
@@ -126,6 +151,7 @@ class Application:
         self.engine=Engine(self.db)
         self.log=logging.getLogger("relayforge")
         self.control=asyncio.Lock()
+        self.http_mutation=asyncio.Lock()
         self.reset_ticket=None
 
     def authenticate(self,key:str|None):
@@ -136,13 +162,32 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
     root = Path(data_root or (runtime_root()/"data"))
     service=Application(root)
 
+    async def daily_backup():
+        while True:
+            try:
+                cfg=service.db.get_setting('backup42_auto') or {}
+                if cfg.get('enabled') and time.time()-float(service.db.get_setting('backup42_last') or 0)>=86400:
+                    async with service.http_mutation, service.control:
+                        if not (root/'restore_pending').exists() and (cfg.get('mode')!='full' or not service.engine.active):
+                            if cfg.get('mode')=='full':await service.engine.collector.shutdown()
+                            password=service.db.reveal(cfg['password'])
+                            backups.make_backup(root,password,cfg['mode'],'daily')
+                            service.db.set_setting('backup42_last',time.time());service.db.event('INFO','system','پشتیبان رمزگذاری‌شده روزانه ساخته شد')
+            except asyncio.CancelledError:raise
+            except Exception:service.db.event('WARN','system','پشتیبان روزانه ناموفق؛ حجم، دسترسی و تنظیمات بررسی شود')
+            await asyncio.sleep(60)
+
     @contextlib.asynccontextmanager
     async def lifespan(app):
-        if start_workers and service.db.get_setting("run_enabled"): service.engine.start()
-        yield
-        await service.engine.stop()
+        if start_workers and service.db.get_setting("run_enabled") and not (root/'restore_pending').exists(): service.engine.start()
+        task=asyncio.create_task(daily_backup()) if start_workers else None
+        try:yield
+        finally:
+            if task:
+                task.cancel();await asyncio.gather(task,return_exceptions=True)
+            await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.2.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -156,7 +201,13 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             origin=request.headers.get("origin","")
             if origin not in (f"http://127.0.0.1:{port}",f"http://localhost:{port}"):
                 return JSONResponse({"detail":"درخواست خارج از داشبورد مجاز نیست"},status_code=403)
-        result=await call_next(request)
+        mutates=request.method not in ("GET","HEAD") or request.url.path=="/api/source/auth"
+        if mutates:
+            async with service.http_mutation:
+                if (root/"restore_pending").exists():
+                    return JSONResponse({"detail":"بازیابی در انتظار راه‌اندازی مجدد است؛ ابتدا برنامه را ببندید و دوباره اجرا کنید"},status_code=409)
+                result=await call_next(request)
+        else:result=await call_next(request)
         result.headers.update({
             "X-Content-Type-Options":"nosniff", "X-Frame-Options":"DENY",
             "Referrer-Policy":"no-referrer", "Cache-Control":"no-store",
@@ -189,7 +240,8 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return FileResponse(web_root()/filename,media_type=mime)
 
     @app.get("/api/status",dependencies=[Depends(auth)])
-    async def status():return service.engine.status()
+    async def status():
+        result=service.engine.status();result["restore_pending"]=(root/"restore_pending").exists();return result
 
     @app.post("/api/source",dependencies=[Depends(auth)])
     async def source_save(data:SourceSettings):
@@ -232,7 +284,9 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         async with service.control:
             if platform not in [t["platform"] for t in service.db.targets()]:raise HTTPException(404,"مقصد نامعتبر")
             if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
-            try:service.db.update_target(platform,data.model_dump())
+            try:
+                if is_user(data.token):raise ValueError("حساب سروش را از بخش ورود حساب انتخاب کنید")
+                service.db.update_target(platform,data.model_dump())
             except Exception as exc:raise safe_exception(exc) from None
             return {"ok":True}
 
@@ -241,7 +295,8 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         if platform not in [t["platform"] for t in service.db.targets()]:raise HTTPException(404)
         try:
             d=service.db.target(platform)
-            result=await check_target(d["provider"],d["token"],d["chat_id"])
+            if d["provider"]=="soroush" and is_user(d["token"]) and service.engine.active:raise ValueError("برای بررسی حساب سروش ابتدا موتور را متوقف کنید")
+            result=await service.engine.splus.check(platform,d["chat_id"]) if d["provider"]=="soroush" and d["token"]==marker(platform) else await check_target(d["provider"],d["token"],d["chat_id"])
             service.db.event("INFO",platform,"تست API: "+result["note"])
             return result
         except Exception as exc:
@@ -283,7 +338,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 d=service.db.target(platform)
                 if not d["token"] or not d["chat_id"]: raise ValueError("ابتدا توکن و شناسه مقصد را ذخیره کنید")
                 service.db.event("INFO",platform,"ارسال آزمایشی دستی آغاز شد")
-                remote=await send(d["provider"],d["token"],d["chat_id"],Post(data.text))
+                remote=await service.engine.splus.send(platform,d["chat_id"],Post(data.text)) if d["provider"]=="soroush" and d["token"]==marker(platform) else await send(d["provider"],d["token"],d["chat_id"],Post(data.text))
                 service.db.event("INFO",platform,"ارسال آزمایشی موفق؛ شناسه پیام مقصد "+str(remote))
                 return {"ok":True,"remote_id":str(remote)}
             except Exception as exc:
@@ -329,12 +384,107 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         try:return {"ok":True,"path":service.db.backup()}
         except Exception as exc:raise safe_exception(exc) from None
 
+    @app.post('/api/targets/{platform}/splus/{action}',dependencies=[Depends(auth)])
+    async def splus_account(platform:str,action:Literal['code','verify','channels'],data:SplusLogin):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            try:
+                d=service.db.target(platform)
+                if d['provider']!='soroush' or d['archived']:raise ValueError('مقصد سروش‌پلاس لازم است')
+                if action=='code':return await service.engine.splus.code(platform,data.phone)
+                if action=='verify':return await service.engine.splus.verify(platform,data.code,data.password)
+                return {'channels':await service.engine.splus.channels(platform)}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/targets/{platform}/splus-select',dependencies=[Depends(auth)])
+    async def splus_select(platform:str,data:SplusSelect):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            try:
+                d=service.db.target(platform)
+                if d['provider']!='soroush' or d['archived']:raise ValueError('مقصد سروش‌پلاس لازم است')
+                await service.engine.splus.check(platform,data.chat_id)
+                service.db.update_target(platform,{'token':marker(platform),'chat_id':data.chat_id,'enabled':False})
+                return {'ok':True}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/backups/export',dependencies=[Depends(auth)])
+    async def export_backup(data:BackupIn):
+        async with service.control:
+            if data.mode=='full' and service.engine.active:raise HTTPException(409,'برای پشتیبان کامل ابتدا موتور را متوقف کنید')
+            try:
+                if data.mode=='full':await service.engine.collector.shutdown()
+                path=backups.make_backup(root,data.password,data.mode)
+                return FileResponse(path,media_type='application/octet-stream',filename=path.name)
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.get('/api/backups',dependencies=[Depends(auth)])
+    async def backup_list():
+        cfg=service.db.get_setting('backup42_auto') or {}
+        files=[{'name':p.name,'bytes':p.stat().st_size,'created':p.stat().st_mtime,'local_key':p.name.startswith(('pre-reset-','pre-upgrade-'))} for p in sorted((root/'backups').glob('*.rfbackup'),key=lambda p:p.stat().st_mtime,reverse=True) if not p.is_symlink()]
+        return {'files':files,'auto_enabled':bool(cfg.get('enabled')),'auto_mode':cfg.get('mode','database'),'last':service.db.get_setting('backup42_last') or 0,'pending':(root/'restore_pending').exists()}
+
+    @app.get('/api/backups/download/{name}',dependencies=[Depends(auth)])
+    async def download_backup(name:str):
+        p=root/'backups'/name
+        if not name.endswith('.rfbackup') or p.name!=name or p.is_symlink() or not p.is_file():raise HTTPException(404)
+        return FileResponse(p,media_type='application/octet-stream',filename=name)
+
+    @app.post('/api/backups/auto',dependencies=[Depends(auth)])
+    async def auto_backup(data:AutoBackupIn):
+        async with service.control:
+            try:
+                cfg=service.db.get_setting('backup42_auto') or {}
+                password=data.password or (service.db.reveal(cfg['password']) if cfg.get('password') else '')
+                if data.enabled:backups.password_check(password)
+                service.db.set_setting('backup42_auto',{'enabled':data.enabled,'mode':data.mode,'password':service.db.secret(password) if data.enabled else ''})
+                return {'ok':True}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/backups/restore',dependencies=[Depends(auth)])
+    async def restore_backup(request:Request,mode:Literal['full','settings']='full',sessions:bool=True,media:bool=True,confirm:bool=False,x_backup_password:str=Header('')):
+        if not confirm:raise HTTPException(400,'تأیید نهایی بازیابی لازم است')
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            try:
+                password=base64.b64decode(x_backup_password,validate=True).decode('utf8')
+                content=bytearray()
+                async for part in request.stream():
+                    if len(content)+len(part)>backups.MAX_BYTES+128:raise ValueError('حجم پشتیبان بیش از حد مجاز')
+                    content.extend(part)
+                await service.engine.collector.shutdown()
+                plan=backups.stage_restore(root,bytes(content),password,mode,sessions,media)
+                service.db.set_setting('run_enabled',False)
+                return {'ok':True,'restart_required':True,'rollback':plan['rollback']}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.get('/api/uncertain',dependencies=[Depends(auth)])
+    async def uncertain_list():return service.db.uncertain_rows()
+
+    @app.post('/api/uncertain/resolve',dependencies=[Depends(auth)])
+    async def uncertain_resolve(data:BulkResolve):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            try:return {'ok':True,'resolved':service.db.resolve_uncertain_bulk(data.ids,data.action,data.all_rows)}
+            except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/targets/{platform}/discover',dependencies=[Depends(auth)])
+    async def discover(platform:str):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,'ابتدا موتور را متوقف کنید')
+            try:
+                d=service.db.target(platform)
+                if d['archived'] or d['provider']!='rubika':raise ValueError('مقصد روبیکا انتخاب شود')
+                rows=await discover_rubika(d['token'])
+                return {'channels':rows,'note':'اگر کانالی دیده نشد، ربات را منشن کنید یا شناسه را دستی وارد کنید'}
+            except Exception as exc:raise safe_exception(exc) from None
+
     @app.post("/api/reset/prepare",dependencies=[Depends(auth)])
     async def reset_prepare():
         if service.engine.active:raise HTTPException(409,"ابتدا موتور را متوقف کنید")
         ticket=secrets.token_urlsafe(32)
         service.reset_ticket=(ticket,time.monotonic()+60,service.db.get_setting("epoch"))
-        return {"ticket":ticket}
+        return {"ticket":ticket,"uncertain":service.db.uncertain_rows()["total"]}
 
     @app.post("/api/reset/commit",dependencies=[Depends(auth)])
     async def reset_commit(data:ResetConfirm):
@@ -342,10 +492,11 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             ticket=service.reset_ticket;service.reset_ticket=None
             if service.engine.active or not ticket or not secrets.compare_digest(ticket[0],data.ticket) or time.monotonic()>ticket[1] or service.db.get_setting("epoch")!=ticket[2]:raise HTTPException(409,"تأیید منقضی یا نامعتبر است")
             try:
-                path=service.db.backup()
+                path=backups.make_backup(root,backups.local_password(root),"database","pre-reset")
+                if data.skip_uncertain:service.db.resolve_uncertain_bulk([], "skip", True)
                 service.db.reset_operation()
                 await service.engine.collector.shutdown()
-                return {"ok":True,"backup":path}
+                return {"ok":True,"backup":str(path)}
             except Exception as exc:raise safe_exception(exc) from None
 
     @app.post("/api/deliveries/{delivery_id}/resolve",dependencies=[Depends(auth)])
@@ -355,7 +506,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.1.0"}
+    async def health():return {"status":"running","version":"4.2.0"}
 
     return app
 
@@ -382,14 +533,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.1.0"); return
+        print("SELF TEST OK 4.2.0"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
+            backups.apply_pending(data)
+            backups.pre_upgrade(data,"4.2.0")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            print(f"RelayForge 4.1 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.2.0")
+            print(f"RelayForge 4.2 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

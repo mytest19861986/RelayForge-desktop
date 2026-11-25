@@ -45,7 +45,8 @@ def test_fallback_and_modes():
     assert r.render('bale','متن #برنامه_نویسی',s)[0]=='*متن* #برنامه_نویسی'
     assert r.render('eitaa','متن &',s,'html')[0]=='<b>متن</b> &amp;'
     assert r.render('eitaa','متن خوب',s,'markdown')[1]=={'parse_mode':'Markdown'}
-    assert r.render('eitaa','متن خوب',s)[0]=='متن خوب'
+    assert r.render('eitaa','متن خوب',s)[0]=='<b>متن</b> خوب'
+    assert r.render('eitaa','متن خوب',s,'plain')[0]=='متن خوب'
     assert r.render('rubika','متن خوب',s,'metadata')[1]['metadata']['meta_data_parts'][0]['type']=='Bold'
     assert r.render('rubika','متن 🔥',s,'metadata')[1]['metadata']['meta_data_parts'][0]['length']==3
 

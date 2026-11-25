@@ -36,7 +36,7 @@ def test_multiline_bold_trim_and_punctuation():
 def test_bold_prioritized_over_italic():
     t='الف ب پ';s=[{'type':'italic','start':0,'end':len(t)},{'type':'bold','start':4,'end':5}];assert '*ب*' in r.render('bale',t,s)[0]
 
-@pytest.mark.parametrize('mode,expected,params',[('markdown_raw','*اطلاعیه مهم*',{}),('markdown_double','**اطلاعیه مهم**',{}),('markdown','*اطلاعیه مهم*',{'parse_mode':'Markdown'}),('html','<b>اطلاعیه مهم</b>',{'parse_mode':'HTML'})])
+@pytest.mark.parametrize('mode,expected,params',[('markdown_raw','*اطلاعیه مهم*',{}),('markdown_double','**اطلاعیه مهم**',{}),('markdown','*اطلاعیه مهم*',{'parse_mode':'Markdown'}),('html','<b>اطلاعیه مهم</b>',{'parse_mode':'html'})])
 def test_eitaa_modes(mode,expected,params):
     out,options,_=r.render('eitaa',TEXT,[SPAN],mode);assert expected in out and options==params
 
@@ -99,4 +99,4 @@ def test_new_api_auth_and_config(tmp_path,monkeypatch):
             assert c.post('/api/ai-lab/'+path,headers={'Origin':'http://127.0.0.1:8765'},json={'text':'سلام'}).status_code==401
             assert c.post('/api/ai-lab/'+path,headers=h,json={'text':'سلام'}).status_code==400
         cfg=c.get('/api/ai-lab',headers=h).json();assert cfg['gemini_key_available'] and 'SECRET' not in json.dumps(cfg)
-        cfg=c.get('/api/richtext',headers=h).json();assert cfg['recommended']['eitaa']=='markdown_raw' and cfg['modes']['eitaa']=='plain'
+        cfg=c.get('/api/richtext',headers=h).json();assert cfg['recommended']['eitaa']=='html' and cfg['modes']['eitaa']=='html'

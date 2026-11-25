@@ -8,8 +8,8 @@ from urllib.parse import urlsplit
 KINDS = {'bold','italic','underline','strikethrough','code','pre','text_link','blockquote','spoiler'}
 TELETHON = {'MessageEntityBold':'bold','MessageEntityItalic':'italic','MessageEntityUnderline':'underline','MessageEntityStrike':'strikethrough','MessageEntityCode':'code','MessageEntityPre':'pre','MessageEntityTextUrl':'text_link','MessageEntityBlockquote':'blockquote','MessageEntitySpoiler':'spoiler'}
 MODES = {'telegram':('native','plain'),'bale':('markdown','markdown_double','plain'),'eitaa':('plain','markdown_raw','markdown_double','markdown','html'),'rubika':('plain','metadata','metadata_codepoint'),'soroush':('plain',)}
-DEFAULTS = {'telegram':'native','bale':'markdown','eitaa':'plain','rubika':'plain','soroush':'plain'}
-RECOMMENDED = {**DEFAULTS,'eitaa':'markdown_raw','rubika':'metadata'}
+DEFAULTS = {'telegram':'native','bale':'markdown','eitaa':'html','rubika':'plain','soroush':'plain'}
+RECOMMENDED = {**DEFAULTS,'eitaa':'html','rubika':'metadata'}
 
 def boundaries(text):
     out=[0]
@@ -115,5 +115,5 @@ def render(platform,text,spans,mode=None,caption=False):
         if len(out)>(950 if caption else 4000):return text,{},['قالب‌بندی از سقف طول عبور کرد؛ متن ساده']
         if dropped:warnings.append('بعضی قالب‌های تودرتو یا پشتیبانی‌نشده حذف شدند')
         if mode!='html' and re.search(r'[*_`]',text):warnings.append('نشانه‌های اصلی Markdown حفظ شدند؛ نمایش آن‌ها در مقصد را بررسی کنید')
-        return out,({'parse_mode':'HTML' if mode=='html' else 'Markdown'} if platform=='eitaa' and mode in ('html','markdown') else {}),warnings
+        return out,({'parse_mode':'html' if mode=='html' else 'Markdown'} if platform=='eitaa' and mode in ('html','markdown') else {}),warnings
     return text,{},['قالب‌بندی در حالت متن ساده حفظ نمی‌شود']

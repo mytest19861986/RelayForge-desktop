@@ -109,7 +109,7 @@ function initBackupTools(){
 
 // v4.3 preview-only studio: no HTML injection, no publish action in the AI Lab.
 let richConfig=null, aiConfig=null, aiClipboard='';
-const richNames={native:'Entities استاندارد',plain:'متن ساده',markdown:'Markdown',html:'HTML آزمایشی',metadata:'متادیتای UTF-16 (آزمایشی)',metadata_codepoint:'متادیتای نویسه‌ای (آزمایشی)',markdown_raw:'Markdown مستقیم (آزمایشی)',markdown_double:'Markdown دو ستاره (آزمایشی)'};
+const richNames={native:'Entities استاندارد',plain:'متن ساده',markdown:'Markdown',html:'HTML (پیشنهادی ایتایار)',metadata:'متادیتای UTF-16 (آزمایشی)',metadata_codepoint:'متادیتای نویسه‌ای (آزمایشی)',markdown_raw:'Markdown مستقیم (آزمایشی)',markdown_double:'Markdown دو ستاره (آزمایشی)'};
 function fillRoute(el){const old=el.value;el.replaceChildren();for(const t of status?.targets||[]){const opt=make('option','',`${t.platform} · ${t.chat_id||'تنظیم نشده'}`);opt.value=t.platform;el.append(opt)}if([...el.options].some(o=>o.value===old))el.value=old;}
 async function loadRich(){try{richConfig=await api('richtext');fillRoute($('rich-route'));const root=$('rich-modes');root.replaceChildren();for(const p of PLATFORMS){const l=make('label','field');l.append(make('span','',p.name));const select=make('select');select.id='rich-mode-'+p.id;for(const m of richConfig.available[p.id]){const o=make('option','',richNames[m]);o.value=m;select.append(o)}select.value=richConfig.modes[p.id];l.append(select);root.append(l)}}catch(e){notify(e.message,true)}}
 function richChoice(){const route=$('rich-route').value,p=route.split(':')[0];if(!route||!$('rich-mode-'+p))throw new Error('ابتدا مقصد و تنظیمات را بارگذاری کنید');return {route,p,mode:$('rich-mode-'+p).value};}

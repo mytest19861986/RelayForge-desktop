@@ -124,5 +124,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"4.3.1","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.3.2","source_state":self.collector.state,"engine_running":self.active})
         return result

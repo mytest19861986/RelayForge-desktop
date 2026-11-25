@@ -2,11 +2,11 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 if errorlevel 1 exit /b 1
-title RelayForge v4.3.1 - Python 3.12 Windows EXE Builder
+title RelayForge v4.3.2 - Python 3.12 Windows EXE Builder
 color 0B
 
 echo =========================================================
-echo   RelayForge 4.3.1 - FULL BUILD [Python 3.12]
+echo   RelayForge 4.3.2 - FULL BUILD [Python 3.12]
 echo =========================================================
 echo.
 echo [INFO] This build uses a separate .venv-build312 environment.
@@ -115,7 +115,7 @@ if errorlevel 1 goto error
 copy /y "docs\RUNTIME_README_FA.md" "%STAGE%\README_FA.md" >nul
 if errorlevel 1 goto error
 
-set "FINAL_ZIP=RelayForge_v4.3.1_WINDOWS_EXE.zip"
+set "FINAL_ZIP=RelayForge_v4.3.2_WINDOWS_EXE.zip"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -LiteralPath '%STAGE%\RelayForge.exe','%STAGE%\START_SERVER.bat','%STAGE%\OPEN_DASHBOARD.bat','%STAGE%\INSTALL_AUTO_START.ps1','%STAGE%\README_FA.md','%STAGE%\START_PROJECT.bat','%STAGE%\INSTALL_SERVICE_WINDOWS.ps1' -DestinationPath '%FINAL_ZIP%' -Force"
 if errorlevel 1 goto error
 rmdir /s /q "%STAGE%" >nul 2>&1

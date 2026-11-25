@@ -78,7 +78,9 @@ def render(platform,text,spans,mode=None,caption=False):
     if mode in ('markdown','markdown_raw','markdown_double','html'):
         import html
         if mode=='html':
-            tags={'bold':('<b>','</b>'),'italic':('<i>','</i>'),'underline':('<u>','</u>'),'strikethrough':('<s>','</s>'),'code':('<code>','</code>')}
+            # Eitaayar live test confirms bold, and the synthetic test uses italic.
+            # Avoid unverified tags that may invalidate the entire HTML payload.
+            tags={'bold':('<b>','</b>'),'italic':('<i>','</i>')} if platform=='eitaa' else {'bold':('<b>','</b>'),'italic':('<i>','</i>'),'underline':('<u>','</u>'),'strikethrough':('<s>','</s>'),'code':('<code>','</code>')}
         else:
             tags={'bold':('**','**'),'italic':('__','__')} if mode=='markdown_double' else {'bold':('*','*'),'italic':('_','_')}
         esc=html.escape if mode=='html' else lambda t:t
@@ -89,7 +91,7 @@ def render(platform,text,spans,mode=None,caption=False):
             k=span['type']
             if k not in tags:dropped=True;continue
             a,z=span['start'],span['end']
-            if mode=='html':
+            if mode=='html' and platform!='eitaa':
                 candidates=[(a,z)]
             else:
                 candidates=[]

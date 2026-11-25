@@ -8,7 +8,7 @@ from string import Formatter
 from dataclasses import dataclass
 from typing import Protocol
 import httpx
-from . import gemini431 as gemini
+from . import gemini431 as gemini, ai_settings
 
 PROMPT_VERSION='4.3.1-lab-1'
 TONES=('formal','friendly','news','educational','sales','concise','custom')
@@ -87,12 +87,12 @@ async def preview(db,text,profile,provider='local',consent=False,model='gpt-4o-m
     if provider=='openai':
         if not consent:raise ValueError('ارسال متن به سرویس خارجی نیازمند تأیید صریح است')
         if not db.get_setting('ai43_enabled'):raise ValueError('ابتدا AI خارجی را فعال کنید')
-        key=os.environ.get('RELAYFORGE_AI_API_KEY','').strip()
-        if not key:raise ValueError('متغیر محیطی RELAYFORGE_AI_API_KEY تنظیم نشده است')
-        if model not in ('gpt-4o-mini','gpt-4o','gpt-4.1-mini'):raise ValueError('مدل خارج از فهرست مجاز است')
+        key,_=ai_settings.credential(db,'openai')
+        if not key:raise ValueError('کلید OpenAI را در داشبورد ذخیره کنید')
+        ai_settings.check_model(db,'openai','text',model)
         gemini.reserve(db);impl=OpenAIPreview(key,model)
     elif provider=='gemini':
-        if model not in gemini.TEXT_MODELS:raise ValueError('مدل Gemini خارج از فهرست مجاز است')
+        ai_settings.check_model(db,'gemini','text',model)
         key=gemini.external_key(db,consent);gemini.reserve(db);impl=GeminiPreview(key,model)
     elif provider!='local':raise ValueError('موتور ناشناخته')
     else:impl=LocalPreview()

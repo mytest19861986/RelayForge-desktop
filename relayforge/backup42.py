@@ -90,7 +90,7 @@ def make_backup(root,password,mode='full',label='manual'):
         if sum(p.stat().st_size for p,_ in entries)>MAX_BYTES:raise ValueError('حجم داده بیش از ۱۲۸ مگابایت؛ حالت تنظیمات یا کپی آفلاین data را استفاده کنید')
         buf=io.BytesIO()
         with zipfile.ZipFile(buf,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=3) as z:
-            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.3.2','mode':mode,'created':time.time()}))
+            z.writestr('manifest.json',json.dumps({'format':1,'version':'4.3.4','mode':mode,'created':time.time()}))
             for p,name in entries:z.write(p,name)
         private_file(dest,seal(buf.getvalue(),password))
     return dest
@@ -116,6 +116,10 @@ def validate_and_rekey(path,oldkey,newkey,mode):
         if not isinstance(source,dict) or source.get('mode') not in ('bot','user'):raise ValueError('مبدأ پشتیبان نامعتبر')
         for field in ('bot_token','api_hash','phone'):source[field]=convert(source.get(field,''))
         con.execute("UPDATE settings SET value=? WHERE key='source'",(json.dumps(source),))
+        for key in ('ai44_key_openai','ai44_key_gemini'):
+            row=con.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()
+            if row:con.execute('UPDATE settings SET value=? WHERE key=?',(json.dumps(convert(json.loads(row[0]))),key))
+        con.execute("DELETE FROM settings WHERE key LIKE 'ai44_catalog_%'")
         for route,token in con.execute('SELECT platform,token FROM targets').fetchall():
             if route.split(':',1)[0] not in PLATFORMS:raise ValueError('مقصد پشتیبان نامعتبر')
             con.execute('UPDATE targets SET token=? WHERE platform=?',(convert(token),route))

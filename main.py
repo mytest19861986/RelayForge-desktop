@@ -1,4 +1,4 @@
-"""RelayForge 4.3 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.3.4 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, base64, contextlib, logging, os, secrets, sys, webbrowser, time
 from relayforge import backup42 as backups
@@ -13,7 +13,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge import richtext, ai43, gemini431
+from relayforge import richtext, ai43, gemini431, ai_settings
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -106,7 +106,7 @@ class PauseTarget(BaseModel):
     enabled:bool
 
 class TestMessage(ConfirmAction):
-    text:str=Field(default="پیام آزمایشی RelayForge 4.3",min_length=1,max_length=500)
+    text:str=Field(default="پیام آزمایشی RelayForge 4.3.4",min_length=1,max_length=500)
 
 class RichModes(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -122,6 +122,7 @@ class RichPreview(BaseModel):
 
 class RichTest(ConfirmAction):
     mode:str=""
+    source_message_id:int|None=Field(default=None,ge=1)
 
 class AIEnable(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -135,6 +136,19 @@ class AIProfile(BaseModel):
     destination:str=Field(default="",max_length=200)
     template:str=Field(default="{body}",max_length=1500)
     locked:list[str]=Field(default_factory=list,max_length=30)
+
+class AIKeyInput(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    operation:Literal["save","remove"]="save"
+    key:str=Field(default="",max_length=512)
+
+class AIPreferences(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    provider:Literal["local","openai","gemini"]="local"
+    openai_model:str=Field(default="",max_length=200)
+    gemini_model:str=Field(default="",max_length=200)
+    tts_model:str=Field(default="",max_length=200)
+    daily_limit:int=Field(default=10,ge=1,le=1000)
 
 class AIPreview(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -240,7 +254,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.2",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.4",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -317,17 +331,53 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             try:
                 d=service.db.target(platform);p=d['provider'];mode=data.mode or (service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
                 if mode not in richtext.MODES[p]:raise ValueError('حالت قالب نامعتبر')
-                text='🔥 آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب\n#برنامه_نویسی'
-                spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
-                post=Post(text,entities=spans,format_mode=mode)
+                saved=(service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
+                if data.source_message_id is not None:
+                    if mode!=saved:raise ValueError('ابتدا روش انتخاب‌شده را ذخیره کنید؛ تست پست واقعی از تنظیم ذخیره‌شده استفاده می‌کند')
+                    with service.db.connection() as c:
+                        row=c.execute("SELECT *, id AS message_id FROM source_messages WHERE epoch=? AND msg_id=? AND protected=0 AND eligible=1 AND media_kind<>'copy'",(service.db.get_setting('epoch'),data.source_message_id)).fetchone()
+                    if not row:raise ValueError('پست مجاز در عملیات فعلی یافت نشد')
+                    row=dict(row);text=row['body'];spans=tuple(richtext.load(text,row['entities']))
+                    path=await service.engine.collector.get_media(row)
+                    if row['media_kind']!='text' and not path:raise ValueError('رسانه در دسترس نیست؛ تست ناقص انجام نمی‌شود')
+                    post=Post(text,row['media_kind'],path,spans,saved)
+                else:
+                    text='🔥 آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب\n#برنامه_نویسی'
+                    spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
+                    post=Post(text,entities=spans,format_mode=mode)
+                rendered,opts,warnings=richtext.render(p,post.text,post.entities,post.format_mode,bool(post.path))
+                diagnostic={'method':'sendFile' if post.path else 'sendMessage','mode':mode,'saved_mode':saved,'parse_mode':opts.get('parse_mode'),'bold_count':sum(x['type']=='bold' for x in spans),'html_bold_tags':rendered.count('<b>'),'warnings':warnings} if p=='eitaa' else {'mode':mode,'saved_mode':saved,'warnings':warnings}
                 remote=await service.engine.splus.send(platform,d['chat_id'],post) if p=='soroush' and d['token']==marker(platform) else await send(p,d['token'],d['chat_id'],post)
                 service.db.event('INFO',platform,'تست قالب‌بندی ارسال شد؛ نمایش در پیام‌رسان را دستی بررسی کنید')
-                return {'ok':True,'remote_id':str(remote),'note':'نمایش بولد را در برنامه مقصد بررسی کنید'}
+                return {'ok':True,'remote_id':str(remote),'note':'نمایش بولد را در برنامه مقصد بررسی کنید'+('؛ روش انتخابی هنوز ذخیره نشده است' if mode!=saved else ''),'diagnostic':diagnostic}
             except Exception as exc:raise safe_exception(exc) from None
 
     @app.get('/api/ai-lab',dependencies=[Depends(auth)])
     async def ai_config():
-        return {'enabled':bool(service.db.get_setting('ai43_enabled')),'key_available':bool(os.environ.get('RELAYFORGE_AI_API_KEY')),'gemini_key_available':bool(os.environ.get('RELAYFORGE_GEMINI_API_KEY') or os.environ.get('GEMINI_API_KEY')),'gemini_models':gemini431.TEXT_MODELS,'tts_models':gemini431.TTS_MODELS,'voices':gemini431.VOICES,'profiles':service.db.get_setting('ai43_profiles') or {},'usage':service.db.get_setting('ai43_usage') or {},'prompt_version':ai43.PROMPT_VERSION}
+        providers=ai_settings.public(service.db)
+        return {'enabled':bool(service.db.get_setting('ai43_enabled')),'key_available':providers['openai']['key_source'] in ('saved','environment'),'gemini_key_available':providers['gemini']['key_source'] in ('saved','environment'),'gemini_models':providers['gemini']['text'],'tts_models':providers['gemini']['tts'],'voices':gemini431.VOICES,'profiles':service.db.get_setting('ai43_profiles') or {},'usage':service.db.get_setting('ai43_usage') or {},'prompt_version':ai43.PROMPT_VERSION,'providers':providers,'preferences':service.db.get_setting('ai44_preferences') or {},'daily_limit':ai_settings.daily_limit(service.db)}
+
+    @app.post('/api/ai-lab/key/{provider}',dependencies=[Depends(auth)])
+    async def ai_key(provider:Literal['openai','gemini'],data:AIKeyInput):
+        try:ai_settings.save_key(service.db,provider,data.operation,data.key)
+        except Exception as exc:raise safe_exception(exc) from None
+        return {'ok':True,'providers':ai_settings.public(service.db)}
+
+    @app.post('/api/ai-lab/models/{provider}',dependencies=[Depends(auth)])
+    async def ai_models(provider:Literal['openai','gemini']):
+        try:return await asyncio.wait_for(ai_settings.refresh(service.db,provider),timeout=90)
+        except TimeoutError:raise HTTPException(400,'زمان دریافت فهرست مدل پایان یافت') from None
+        except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/ai-lab/preferences',dependencies=[Depends(auth)])
+    async def ai_preferences(data:AIPreferences):
+        try:
+            for p,k,m in [('openai','text',data.openai_model),('gemini','text',data.gemini_model),('gemini','tts',data.tts_model)]:
+                if m:ai_settings.check_model(service.db,p,k,m)
+            service.db.set_setting('ai44_preferences',data.model_dump(exclude={'daily_limit'}))
+            service.db.set_setting('ai44_daily_limit',data.daily_limit)
+        except Exception as exc:raise safe_exception(exc) from None
+        return {'ok':True}
 
     @app.post('/api/ai-lab/enable',dependencies=[Depends(auth)])
     async def ai_enable(data:AIEnable):
@@ -635,7 +685,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.2"}
+    async def health():return {"status":"running","version":"4.3.4"}
 
     return app
 
@@ -662,17 +712,17 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.2"); return
+        print("SELF TEST OK 4.3.4"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.2")
+            backups.pre_upgrade(data,"4.3.4")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.2")
-            print(f"RelayForge 4.3 | http://127.0.0.1:{opt.port}",flush=True)
+            backups.mark_version(data,"4.3.4")
+            print(f"RelayForge 4.3.4 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

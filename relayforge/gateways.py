@@ -14,6 +14,15 @@ class NotSupported(Exception): pass
 class RetryLater(Exception):
     def __init__(self,delay=30): self.delay=max(30,min(86400,int(delay))); super().__init__("خطای موقت؛ تلاش مجدد")
 
+def safe_description(obj, token=""):
+    if not isinstance(obj,dict): return ""
+    desc=obj.get("description") or obj.get("error_message") or obj.get("status_det") or ""
+    if not isinstance(desc,str): return ""
+    if token: desc=desc.replace(token,"[TOKEN]")
+    desc=re.sub(r"https?://[^\s]+","[URL]",desc)
+    desc=re.sub(r"\b\d{5,}:[A-Za-z0-9_-]{5,}","[TOKEN]",desc)
+    return " ".join(desc.split())[:250]
+
 def validate_token(token):
     if not re.fullmatch(r"[A-Za-z0-9:_-]{5,250}",token or ""): raise Rejected("قالب توکن API نامعتبر")
 
@@ -45,6 +54,16 @@ async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, fi
     except (httpx.TimeoutException, httpx.TransportError) as ex:
         # Do not log URL: token is part of URL. No blind retry after POST.
         raise Uncertain("ارتباط با API مقصد قطع شد؛ رسیدن پیام نامشخص است") from None
+    # Never include the URL or raw body (contains token or private data).
+    path=urlsplit(url).path
+    method=path.rsplit("/",1)[-1]
+    if method not in {"getMe","getChat","getChatMember","sendMessage","sendPhoto","sendVideo","sendAudio","sendVoice","sendDocument","sendAnimation","sendFile","copyMessage","requestSendFile"}: method="upload"
+    token=path.rsplit("/",2)[-2] if "/" in path else ""
+    if token.startswith("bot"): token=token[3:]
+    try: obj=response.json()
+    except ValueError: obj=None
+    description=safe_description(obj,token)
+    suffix=(" | "+description) if description else ""
     if response.status_code==429:
         try: delay=int((response.json().get("parameters") or {}).get("retry_after") or response.headers.get("Retry-After") or 30)
         except (ValueError,TypeError,AttributeError): delay=30
@@ -53,11 +72,18 @@ async def _post(client: httpx.AsyncClient, url: str, *, json=None, data=None, fi
         raise Uncertain(f"پاسخ سرور مقصد HTTP {response.status_code}؛ وضعیت ارسال نامطمئن")
     if response.status_code >= 300 and response.status_code < 400:
         raise Rejected("انتقال HTTP به آدرس دیگر از API پذیرفته نمی‌شود")
-    try: obj = response.json()
-    except ValueError: raise Uncertain("پاسخ API مقصد JSON معتبر نیست") from None
     if response.status_code >= 400:
-        raise Rejected(f"درخواست از طرف مقصد رد شد (HTTP {response.status_code})")
-    if not isinstance(obj, dict): raise Uncertain("شکل پاسخ مقصد قابل تأیید نیست")
+        raise Rejected(f"{method}: درخواست مقصد رد شد (HTTP {response.status_code})"+suffix)
+    if not isinstance(obj, dict): raise Uncertain(f"{method}: پاسخ API مقصد JSON معتبر نیست")
+    if obj.get("ok") is False or ("status" in obj and str(obj["status"]).upper() not in ("OK","SUCCESS")):
+        code=obj.get("error_code")
+        # Some providers return HTTP 200 with an API-level rate-limit code.
+        if str(code)=="429":
+            try: delay=int((obj.get("parameters") or {}).get("retry_after",30))
+            except (ValueError,TypeError,AttributeError): delay=30
+            raise RetryLater(delay)
+        code=str(code) if isinstance(code,int) else str(response.status_code)
+        raise Rejected(f"{method}: API مقصد درخواست را رد کرد (code {code})"+suffix)
     return obj
 
 
@@ -143,6 +169,8 @@ async def check_target(platform,token,chat_id):
         me=_result(platform,await _post(client,address+"getMe"),False)
         chat=_result(platform,await _post(client,address+"getChat",json={"chat_id":chat_id}),False)
         member=_result(platform,await _post(client,address+"getChatMember",json={"chat_id":chat_id,"user_id":me["id"]}),False)
+    if platform=="bale" and chat.get("type")=="channel" and member.get("status")=="administrator" and "can_post_messages" not in member:
+        return {"ok":True,"chat_id":str(chat["id"]),"note":"بازو مدیر کانال است؛ API مجوز انتشار را صریحاً اعلام نکرد. پیام آزمایشی واقعی ارسال کنید"}
     if chat.get("type")!="channel" or not (member.get("status")=="creator" or (member.get("status")=="administrator" and member.get("can_post_messages") is True)):
         raise Rejected("ربات مجوز انتشار در کانال مقصد ندارد")
     return {"ok":True,"chat_id":str(chat["id"]),"note":"API مجوز انتشار را تأیید کرد (بدون ارسال پیام؛ انتشار واقعی هنوز تست نشده)"}

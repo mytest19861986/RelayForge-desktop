@@ -6,7 +6,7 @@ import asyncio, logging, mimetypes, os, re, hashlib, shutil
 from pathlib import Path
 from urllib.parse import quote
 import httpx
-from .database import Database
+from .database import Database, matches_filter
 
 log = logging.getLogger("relayforge.source")
 
@@ -122,7 +122,11 @@ class Collector:
                 entity=await client.get_entity(cfg["channel"])
             except Exception:
                 raise SourceUnavailable("کانال با حساب فعلی در دسترس نیست") from None
-            return {"ok":True,"method":"API ID/Hash","channel":getattr(entity,"title",cfg["channel"]),"note":"حساب مجاز و کانال قابل خواندن است"}
+            from telethon import utils
+            peer=str(utils.get_peer_id(entity))
+            if self.db.get_setting("source_peer") and str(self.db.get_setting("source_peer"))!=peer:
+                raise SourceUnavailable("شناسه واقعی کانال با مبدأ ذخیره‌شده متفاوت است؛ ادامه متوقف شد")
+            return {"ok":True,"method":"API ID/Hash","peer_id":peer,"channel":getattr(entity,"title",cfg["channel"]),"note":"حساب مجاز و کانال قابل خواندن است"}
         token=cfg["bot_token"]
         if not token:raise SourceUnavailable("توکن BotFather وارد نشده است")
         async with httpx.AsyncClient(timeout=20,trust_env=True) as client:
@@ -141,7 +145,7 @@ class Collector:
         if role not in ("administrator","creator"):
             raise SourceUnavailable("ربات در کانال مبدأ ادمین نیست؛ برای دریافت channel_post ادمین کنید")
         return {"ok":True,"method":"BotFather","channel":(info.get("result") or {}).get("title",cfg["channel"]),
-                "note":"ربات به کانال دسترسی ادمین دارد؛ دریافت واقعی پست جدید پس از انتشار آزمایشی بررسی شود"}
+                "peer_id":str((info.get("result") or {}).get("id","")),"note":"ربات به کانال دسترسی ادمین دارد؛ دریافت واقعی پست جدید پس از انتشار آزمایشی بررسی شود"}
 
     async def tick(self):
         cfg=self.db.get_source()
@@ -171,7 +175,7 @@ class Collector:
                 res=await client.post(f"https://api.telegram.org/bot{token}/getUpdates",json=payload)
                 result=res.json()
         except (httpx.TransportError,ValueError,KeyError):
-            self.state="network_retry"; await asyncio.sleep(30); return
+            self.state="network_retry"; self.db.event("WARN","source","شبکه BotFather قطع است؛ تلاش مجدد ۳۰ ثانیه"); await asyncio.sleep(30); return
         if res.status_code != 200 or result.get("ok") is not True:
             self.state="api_error"
             self.db.event("WARN","source",f"خطای دریافت بات HTTP {res.status_code} یا مصرف‌کننده/Webhook دیگر")
@@ -181,7 +185,12 @@ class Collector:
             post=update.get("channel_post")
             if post and matches_channel(cfg["channel"],post.get("chat") or {}):
                 item=bot_message_payload(post)
-                if post.get("chat",{}).get("id"): self.db.set_setting("source_peer",str(post["chat"]["id"]))
+                if post.get("chat",{}).get("id"):
+                    actual=str(post["chat"]["id"]); expected=self.db.get_setting("source_peer")
+                    if expected and str(expected)!=actual:
+                        self.db.event("ERROR","source","شناسه کانال تغییر کرده؛ این پیام وارد صف نشد")
+                        self.db.set_setting("bot_offset",uid); continue
+                    self.db.set_setting("source_peer",actual)
                 self.db.ingest(**item,live=True,epoch=cfg["epoch"])
             # Commit offset only after durable ingestion; duplicate replay is idempotent.
             self.db.set_setting("bot_offset",uid)
@@ -189,19 +198,22 @@ class Collector:
     async def _user_tick(self,cfg):
         self.state="user_connecting"
         try: client=await self._client()
-        except (SourceUnavailable,Exception) as ex:
-            self.state="login_required"; await asyncio.sleep(30); return
+        except Exception as ex:
+            self.state="network_retry"; self.db.event("WARN","source","اتصال حساب تلگرام برقرار نشد؛ تلاش مجدد ۳۰ ثانیه ("+type(ex).__name__+")"); await asyncio.sleep(30); return
         if not await client.is_user_authorized():
-            self.state="login_required"; await asyncio.sleep(5); return
+            self.state="login_required"; self.db.event("WARN","source","ورود حساب تلگرام کامل نیست؛ موتور را متوقف و از بخش مبدأ ورود را تکمیل کنید"); await asyncio.sleep(30); return
         if self._entity is None or getattr(self,"_entity_ref",None) != cfg["channel"]:
             try:
                 entity=await client.get_entity(cfg["channel"])
-                self._entity=entity
-                self._entity_ref=cfg["channel"]
                 if self._handler is not None:
                     client.remove_event_handler(self._handler)
                 from telethon import events, utils
                 expected=utils.get_peer_id(entity)
+                saved=self.db.get_setting("source_peer")
+                if saved and str(expected)!=str(saved):
+                    self.state="channel_mismatch"; self.db.event("ERROR","source","شناسه واقعی کانال با مبدأ قبلی متفاوت است؛ هیچ پیام جدیدی ثبت نشد")
+                    await asyncio.sleep(30); return
+                self._entity=entity; self._entity_ref=cfg["channel"]
                 self.db.set_setting("source_peer",str(expected))
                 async def on_new(event):
                     current=self.db.get_source()
@@ -231,6 +243,10 @@ class Collector:
             cursor=int(self.db.get_setting("history_cursor") or (cfg["start_id"]-1))
             cursor=max(cursor,cfg["start_id"]-1)
             count=0
+            if cfg["end_id"] is not None and cursor>=cfg["end_id"]:
+                self.state="listening_user" if cfg["realtime_enabled"] else "archive_complete"
+                await asyncio.sleep(cfg["poll_seconds"]); return
+            self.state="user_archive"
             try:
                 async for msg in client.iter_messages(self._entity,min_id=cursor,reverse=True,limit=80):
                     if cfg["end_id"] is not None and msg.id > cfg["end_id"]:
@@ -240,7 +256,7 @@ class Collector:
                     count+=1
             except Exception:
                 self.state="history_retry"
-                self.db.event("WARN","source","پیمایش آرشیو موقتاً ناموفق بود و مجدداً تلاش می‌شود")
+                self.db.event("WARN","source","پیمایش آرشیو موقتاً ناموفق بود؛ آخرین شناسه ثبت شده "+str(self.db.get_setting("history_cursor")))
             # Keep user client running and receiving NewMessage events between scans.
             await asyncio.sleep(1 if count == 80 else cfg["poll_seconds"])
         else:
@@ -257,6 +273,10 @@ class Collector:
         if not live and (msg.id < cfg["start_id"] or (cfg["end_id"] is not None and msg.id>cfg["end_id"])): return
         protected=bool(getattr(msg,"noforwards",False) or getattr(self._entity,"noforwards",False))
         body=(getattr(msg,"message","") or "")
+        if not matches_filter(body,cfg):
+            self.db.ingest(msg.id,body,protected=protected,epoch=cfg["epoch"],live=live); return
+        if getattr(msg,"action",None):
+            self.db.event("WARN","source",f"پست {msg.id}: پیام سیستمی قابل انتشار نیست"); return
         kind="text";media="";name=""
         if getattr(msg,"media",None) and not (getattr(msg,"web_preview",None) and not getattr(msg,"document",None) and not getattr(msg,"photo",None)):
             if getattr(msg,"photo",None): kind="photo"
@@ -265,6 +285,9 @@ class Collector:
             elif getattr(msg,"audio",None): kind="audio"
             else: kind="document"
             mf=getattr(msg,"file",None)
+            if not mf and not getattr(msg,"photo",None):
+                self.db.event("WARN","source",f"پست {msg.id}: نوع رسانه پشتیبانی نمی‌شود؛ رد شد")
+                return
             name=getattr(mf,"name",None) or f"{kind}_{msg.id}"
             size=int(getattr(mf,"size",0) or 0)
             if size and size>cfg["max_media_mb"]*1024*1024:
@@ -291,7 +314,30 @@ class Collector:
             if not path.is_relative_to(self.db.root.resolve()): raise SourceUnavailable("مسیر رسانه نامعتبر")
             if path.is_file(): return str(path)
         if self.db.get_source()["mode"] != "bot":
-            raise SourceUnavailable("رسانه حساب کاربری در کش موجود نیست؛ بررسی دستی لازم است")
+            async with self._media_lock:
+                current=self.db.media_path_for(row["message_id"])
+                if current:
+                    path=(self.db.root/current).resolve()
+                    if path.is_relative_to(self.db.root.resolve()) and path.is_file(): return str(path)
+                client=await self._client()
+                if not await client.is_user_authorized(): raise SourceUnavailable("حساب تلگرام وارد نشده است")
+                entity=await client.get_entity(self.db.get_source()["channel"])
+                from telethon import utils
+                peer=str(utils.get_peer_id(entity))
+                if peer!=str(self.db.get_setting("source_peer")): raise SourceUnavailable("شناسه کانال تأیید نشده است")
+                msg=await client.get_messages(entity,ids=int(row["msg_id"]))
+                if not msg or getattr(msg,"noforwards",False) or getattr(entity,"noforwards",False): raise SourceUnavailable("رسانه حذف شده یا محافظت‌شده است")
+                cap=self.db.get_source()["max_media_mb"]*1024*1024
+                size=int(getattr(getattr(msg,"file",None),"size",0) or 0)
+                if size>cap: raise SourceUnavailable("حجم رسانه بیش از سقف مجاز است")
+                self.check_media_capacity(size or cap)
+                actual=await msg.download_media(file=str(self.db.root/"media"/f"restore_{row['message_id']}"))
+                if not actual: raise SourceUnavailable("رسانه بازیابی نشد")
+                path=Path(actual).resolve()
+                if not path.is_relative_to((self.db.root/"media").resolve()): raise SourceUnavailable("مسیر رسانه نامعتبر")
+                if path.stat().st_size>cap: path.unlink(missing_ok=True); raise SourceUnavailable("حجم رسانه بیش از سقف مجاز است")
+                self.db.set_media_path(row["message_id"],str(path.relative_to(self.db.root.resolve())))
+                return str(path)
         async with self._media_lock:
             # Another destination may already have downloaded this file.
             current=self.db.media_path_for(row["message_id"])

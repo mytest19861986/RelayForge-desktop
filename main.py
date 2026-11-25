@@ -1,17 +1,17 @@
-"""RelayForge 4.0 | FastAPI local dashboard & Windows VPS runtime."""
+"""RelayForge 4.1 | FastAPI local dashboard & Windows VPS runtime."""
 from __future__ import annotations
 import argparse, asyncio, contextlib, logging, os, secrets, sys, webbrowser, time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Literal
-from fastapi import FastAPI, Request, Depends, Header, HTTPException
+from fastapi import FastAPI, Request, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge.gateways import check_target, Rejected, Uncertain, RetryLater
+from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater
 
 APP_NAME="RelayForge"
 PORT=8765
@@ -78,6 +78,7 @@ class SourceSettings(BaseModel):
     filter_match:Literal["any","all"]="any"
     prefix:str=Field(default="",max_length=500)
     suffix:str=Field(default="",max_length=500)
+    upgrade_archive:bool=False
 
 class TargetSettings(BaseModel):
     model_config=ConfigDict(extra="forbid")
@@ -89,6 +90,20 @@ class TargetSettings(BaseModel):
 
 class NewTarget(BaseModel):
     provider:Literal["telegram","bale","rubika","eitaa","soroush"]
+
+class ConfirmAction(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    confirm:Literal[True]
+
+class RemoveTargets(ConfirmAction):
+    routes:list[str]=Field(min_length=1,max_length=50)
+
+class PauseTarget(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    enabled:bool
+
+class TestMessage(ConfirmAction):
+    text:str=Field(default="پیام آزمایشی RelayForge 4.1",min_length=1,max_length=500)
 
 class ResetConfirm(BaseModel):
     ticket:str
@@ -127,7 +142,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         yield
         await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.0.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.1.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -178,10 +193,17 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.post("/api/source",dependencies=[Depends(auth)])
     async def source_save(data:SourceSettings):
-        if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
-        try:service.db.update_source(data.model_dump())
-        except Exception as exc:raise safe_exception(exc) from None
-        return {"ok":True}
+        async with service.control:
+            if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
+            try:
+                old=service.db.get_source()
+                if data.upgrade_archive and old["mode"]=="bot" and data.mode=="user" and data.channel==old["channel"] and not service.db.get_setting("source_peer"):
+                    info=await service.engine.collector.check_source()
+                    if not info.get("peer_id"): raise ValueError("شناسه عددی مبدأ قبلی قابل تأیید نیست؛ پروژه جدا بسازید")
+                    service.db.set_setting("source_peer",info["peer_id"])
+                service.db.update_source(data.model_dump())
+            except Exception as exc:raise safe_exception(exc) from None
+            return {"ok":True}
 
     @app.post("/api/source/check",dependencies=[Depends(auth)])
     async def source_check():
@@ -207,25 +229,82 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.post("/api/targets/{platform}",dependencies=[Depends(auth)])
     async def target_save(platform:str, data:TargetSettings):
-        if platform not in [t["platform"] for t in service.db.targets()]:raise HTTPException(404,"مقصد نامعتبر")
-        if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
-        try:service.db.update_target(platform,data.model_dump())
-        except Exception as exc:raise safe_exception(exc) from None
-        return {"ok":True}
+        async with service.control:
+            if platform not in [t["platform"] for t in service.db.targets()]:raise HTTPException(404,"مقصد نامعتبر")
+            if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
+            try:service.db.update_target(platform,data.model_dump())
+            except Exception as exc:raise safe_exception(exc) from None
+            return {"ok":True}
 
     @app.post("/api/targets/{platform}/check",dependencies=[Depends(auth)])
     async def target_check(platform:str):
         if platform not in [t["platform"] for t in service.db.targets()]:raise HTTPException(404)
         try:
             d=service.db.target(platform)
-            return await check_target(d["provider"],d["token"],d["chat_id"])
-        except Exception as exc: raise safe_exception(exc) from None
+            result=await check_target(d["provider"],d["token"],d["chat_id"])
+            service.db.event("INFO",platform,"تست API: "+result["note"])
+            return result
+        except Exception as exc:
+            err=safe_exception(exc);service.db.event("ERROR",platform,"تست API: "+str(err.detail));raise err from None
 
     @app.post("/api/targets",dependencies=[Depends(auth)])
     async def target_add(data:NewTarget):
         if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
         try:return {"ok":True,"route":service.db.add_target(data.provider)}
         except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post("/api/target-actions/remove",dependencies=[Depends(auth)])
+    async def target_remove(data:RemoveTargets):
+        async with service.control:
+            if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
+            try: return {"ok":True,"removed":service.db.remove_targets(data.routes)}
+            except Exception as exc: raise safe_exception(exc) from None
+
+    @app.post("/api/targets/{platform}/pause",dependencies=[Depends(auth)])
+    async def target_pause(platform:str,data:PauseTarget):
+        if platform not in [t["platform"] for t in service.db.targets()]: raise HTTPException(404)
+        try: service.db.update_target(platform,{"enabled":data.enabled})
+        except Exception as exc: raise safe_exception(exc) from None
+        return {"ok":True}
+
+    @app.post("/api/targets/{platform}/clear-queue",dependencies=[Depends(auth)])
+    async def target_clear(platform:str,data:ConfirmAction):
+        async with service.control:
+            if service.engine.active: raise HTTPException(409,"ابتدا موتور را متوقف کنید")
+            try: return {"ok":True,"cleared":service.db.clear_queue(platform)}
+            except Exception as exc: raise safe_exception(exc) from None
+
+    @app.post("/api/targets/{platform}/test-send",dependencies=[Depends(auth)])
+    async def target_test_send(platform:str,data:TestMessage):
+        async with service.control:
+            if service.engine.active: raise HTTPException(409,"برای تست مستقل ابتدا موتور را متوقف کنید")
+            if platform not in [t["platform"] for t in service.db.targets()]: raise HTTPException(404)
+            try:
+                d=service.db.target(platform)
+                if not d["token"] or not d["chat_id"]: raise ValueError("ابتدا توکن و شناسه مقصد را ذخیره کنید")
+                service.db.event("INFO",platform,"ارسال آزمایشی دستی آغاز شد")
+                remote=await send(d["provider"],d["token"],d["chat_id"],Post(data.text))
+                service.db.event("INFO",platform,"ارسال آزمایشی موفق؛ شناسه پیام مقصد "+str(remote))
+                return {"ok":True,"remote_id":str(remote)}
+            except Exception as exc:
+                err=safe_exception(exc);service.db.event("ERROR",platform,"ارسال آزمایشی: "+str(err.detail));raise err from None
+
+    @app.get("/api/reports/routes",dependencies=[Depends(auth)])
+    async def report_routes():return {"routes":service.db.report_routes()}
+
+    @app.get("/api/reports/{kind}",dependencies=[Depends(auth)])
+    async def reports(kind:Literal["events","deliveries"],route:str=Query("",max_length=100),q:str=Query("",max_length=250),limit:int=Query(100,ge=1,le=500),offset:int=Query(0,ge=0)):
+        return service.db.report(kind,route,q,limit,offset)
+
+    @app.post("/api/source/rescan",dependencies=[Depends(auth)])
+    async def source_rescan(data:ConfirmAction):
+        async with service.control:
+            if service.engine.active:raise HTTPException(409,"ابتدا موتور را متوقف کنید")
+            src=service.db.get_source()
+            if not src["history_enabled"]:raise HTTPException(400,"ابتدا آرشیو را فعال و ذخیره کنید")
+            service.db.set_setting("history_cursor",src["start_id"]-1)
+            service.db.event("INFO","source","پیمایش مجدد آرشیو درخواست شد؛ شناسه‌های قبلاً ثبت شده تکرار نمی‌شوند")
+            return {"ok":True}
 
     @app.post("/api/engine/{action}",dependencies=[Depends(auth)])
     async def engine_control(action:Literal["start","stop","restart"]):
@@ -238,6 +317,8 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 if not src["channel"] or not any(t["enabled"] for t in targets): raise HTTPException(400,"مبدأ و حداقل یک مقصد را تنظیم کنید")
                 if not src["history_enabled"] and not src["realtime_enabled"]: raise HTTPException(400,"آرشیو یا دریافت لحظه‌ای را فعال کنید")
                 if src["mode"]=="bot" and src["history_enabled"] and not src["realtime_enabled"] and not any(t["enabled"] and t["provider"]=="telegram" for t in targets): raise HTTPException(400,"آرشیو BotFather فقط برای مقصد تلگرام امکان‌پذیر است")
+                if src["mode"]=="bot" and src["history_enabled"] and any(t["enabled"] and t["provider"]!="telegram" for t in targets):
+                    service.db.event("WARN","source","آرشیو BotFather به مقصدهای غیرتلگرام ارسال نمی‌شود؛ برای این مقصدها فقط پست جدید یا روش API ID/Hash")
                 service.db.set_setting("run_enabled",True)
                 service.engine.start()
             service.reset_ticket=None
@@ -274,7 +355,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.0.0"}
+    async def health():return {"status":"running","version":"4.1.0"}
 
     return app
 
@@ -301,14 +382,14 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.0.0"); return
+        print("SELF TEST OK 4.1.0"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            print(f"RelayForge 4.0 | http://127.0.0.1:{opt.port}",flush=True)
+            print(f"RelayForge 4.1 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading
             if not opt.no_browser and stop is None:

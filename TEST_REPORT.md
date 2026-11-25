@@ -1,22 +1,12 @@
-# RelayForge 4.0.0 — Evidence / Test report
+# RelayForge 4.1.0 — test evidence
 
-Baseline: `RelayForge_v3.0.2_PY312_BUILD_FIXED_SOURCE.zip` extracted and upgraded, retaining additive SQLite schema and prior architecture. No modification of the user's live data, VPS, or GitHub.
+Baseline: RelayForge_v4.0.0_FULL_BUILD_R2.zip, extracted locally. No live VPS, repository, or account data was modified.
 
-- Environment: Linux, CPython 3.13.5; FastAPI 0.128.2, Starlette 0.50.0, Pydantic 2.13.5, Uvicorn 0.48.0, HTTPX 0.28.1, cryptography 46.0.4, pytest 9.0.2, pytest-asyncio 1.3.0.
-- Unit and API test suite: **75 passed**, including 50 baseline tests and 25 additional v4 tests. Two baseline test expectations intentionally changed: BotFather historical copy now accepts a bounded archive (instead of always rejecting it), and backfill explicitly opts in. Existing security, queue isolation, restart and migration tests retained.
-- Actual local Python runtime HTTP smoke: PASS. Started subprocess, checked health, HTML and JS/CSS, 401 on unauthorized request, authenticated status with idle engine; stopped disposable test process. No external posts sent.
-- JS syntax (`node --check web/main.js`): PASS. Python self-test: PASS. Offline screenshots rendered actual HTML/CSS/JS with synthetic status and no live API. Direct Chromium localhost navigation was blocked by environment policy, so complete live browser interactions not verified.
-- `Telethon` is not installed in this Linux environment; tests for Telethon actual account login, media download, and reconnect are **not performed**. Provider HTTP tests use mocks. No real provider credentials used.
-- Windows compile, EXE smoke, scheduler, service registration, Windows 10/11 and Server 2019 deployment: **UNVERIFIED**. Windows workflow and scripts included, not run here. No Windows binary included. Nuitka source protection is not absolute.
+- 75 original tests retained and passed; 17 new v4.1 tests passed (92 total). See TEST_OUTPUT.txt. New tests: soft deletion and atomic bulk removal, protection of uncertain sends, clearing one queue, re-add deduplication, historical chat labels, filtered/paginated reports, BotFather archive warning, explicit same-channel archive upgrade, mocked archive delivery to Bale/Eitaa while preserving Telegram delivery history, mocked photo upload, provider error redaction, non-JSON HTTP 404 handling, HTTP-200 API rate limiting, pre-send media retry, auth and cross-origin protection, confirmed test send, pause/clear, archive rescan.
+- Actual local FastAPI HTTP subprocess smoke: PASS, see SMOKE_OUTPUT.txt. Health 4.1.0, HTML/CSS/JS, unauthorized and authorized status. Node syntax check and Python compile check PASS.
+- All provider HTTP calls in tests are mocked; the Telethon archive scan and media download tests use fake clients/messages. Telethon itself is not installed in this Linux test environment. Account login, actual archive retrieval, provider permissions and real sends remain unverified, including Bale media API behavior. Do not claim live delivery.
+- UI HTML/JS modified; full browser click-through and visual acceptance not performed. The old screenshots from v4.0 are excluded from the new distribution to avoid presenting them as current.
+- Windows 10/11/Server 2019 EXE compilation, runtime smoke, Task Scheduler and service are not tested here. The existing Windows build preflight, Python 3.12, Nuitka 4.3.1, full pytest gate and post-build binary HTTP smoke are retained; Windows workflow included, not executed. Source ZIP contains no compiled executable.
+- Remaining limitations inherited: no central multi-project dashboard, complete media albums unsupported, no automatic media eviction, no daily-clock schedule, and provider-specific limitations. Bot API history can only direct-copy to Telegram; cross-platform archive requires a permitted user session. Report retention grows with use; monitor disk. Pagination and export may shift during live traffic; stop engine for stable export. Historical events already pruned in prior versions cannot be restored. Existing pre-v4.1 rows lack recorded destination chat snapshots, so report falls back to route's current chat ID where necessary.
 
-## Key regression scenarios
-1. Archive end 200 does not drop live 201; disabling live prevents ingestion.
-2. Exact hashtag and keyword any/all matching, exclusions, prefix/suffix.
-3. Multiple independent destination IDs; default no backfill; opt-in backfill; token update preserves history.
-4. Uncertain delivery blocks only own destination; connect error and rate limit deferred; read timeout remains uncertain.
-5. Bot archive references only Telegram; historical reference upgraded if real live content becomes available; cursor persists; filter/archive incompatible in bot mode.
-6. Reset archives previous operations; backup and no reset with uncertain delivery; API one-time ticket; validation errors redact input.
-7. Provider result missing message ID rejected; Telegram copy protection and same-chat safeguard; publishing rights mock check.
-
-## Release gates still open
-Real Telegram BotFather and Telethon account tests, Eitaa/Bale/Rubika/Soroush text and media sends, Windows build and service lifecycle, full browser workflow, media album handling and automatic safe cache pruning, single-panel multi-project management, exact daily clock schedule. Status: release candidate / NOT production accepted.
+Release status: locally verified candidate; live provider and Windows release gates remain open.

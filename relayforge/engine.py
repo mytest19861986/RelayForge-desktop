@@ -71,6 +71,7 @@ class Engine:
     async def _deliver(self,platform,job):
         did=job["id"]
         interval=job["interval_seconds"]
+        self.db.event("INFO",platform,f"شروع ارسال #{did} | پست مبدأ #{job['msg_id']} | نوع {job['media_kind']}")
         try:
             if job["protected"]: raise Rejected("محتوای محافظت‌شده منتشر نمی‌شود")
             if job["media_kind"]=="copy":
@@ -86,13 +87,17 @@ class Engine:
                         if info["chat_id"]==str(peer): raise Rejected("کانال مقصد همان مبدأ است")
                         self.route_cache={k:v for k,v in self.route_cache.items() if k[0]!=platform}
                         self.route_cache[key]=True
-                path=await self.collector.get_media(job)
+                try: path=await self.collector.get_media(job)
+                except SourceUnavailable: raise
+                except Exception as exc:
+                    self.db.defer_delivery(did,platform,30,"خطای دریافت رسانه پیش از ارسال: "+type(exc).__name__)
+                    return
                 remote=await send(provider(platform),job["token"],job["chat_id"],Post(job["body"],job["media_kind"],path))
         except RetryLater as exc:
             self.db.defer_delivery(did,platform,exc.delay,"اتصال موقت یا محدودیت نرخ؛ تلاش مجدد امن")
             return
-        except SourceUnavailable:
-            self.db.defer_delivery(did,platform,30,"دریافت رسانه از تلگرام ناموفق؛ بررسی مبدأ در صورت تکرار")
+        except SourceUnavailable as exc:
+            self.db.defer_delivery(did,platform,30,"دریافت رسانه: "+str(exc))
             return
         except (Rejected,NotSupported) as exc:
             self.db.finish_delivery(did,platform,"failed",detail=str(exc),interval=interval)
@@ -108,5 +113,5 @@ class Engine:
 
     def status(self):
         result=self.db.snapshot()
-        result.update({"version":"4.0.0","source_state":self.collector.state,"engine_running":self.active})
+        result.update({"version":"4.1.0","source_state":self.collector.state,"engine_running":self.active})
         return result

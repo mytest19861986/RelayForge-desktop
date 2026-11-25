@@ -42,12 +42,12 @@ def test_link_safe():
 
 def test_fallback_and_modes():
     s=[{'type':'bold','start':0,'end':3}];assert r.render('bale','متن خوب',s)[0]=='*متن* خوب'
-    assert r.render('bale','متن #برنامه_نویسی',s)[0]=='متن #برنامه_نویسی'
+    assert r.render('bale','متن #برنامه_نویسی',s)[0]=='*متن* #برنامه_نویسی'
     assert r.render('eitaa','متن &',s,'html')[0]=='<b>متن</b> &amp;'
     assert r.render('eitaa','متن خوب',s,'markdown')[1]=={'parse_mode':'Markdown'}
     assert r.render('eitaa','متن خوب',s)[0]=='متن خوب'
     assert r.render('rubika','متن خوب',s,'metadata')[1]['metadata']['meta_data_parts'][0]['type']=='Bold'
-    assert r.render('rubika','متن 🔥',s,'metadata')[2]
+    assert r.render('rubika','متن 🔥',s,'metadata')[1]['metadata']['meta_data_parts'][0]['length']==3
 
 def test_prefix_and_rescan_no_duplicate(tmp_path):
     db=db_at(tmp_path);db.update_source({'prefix':'🔥 '});assert db.ingest(1,'متن خوب');job=db.next_delivery('bale');db.finish_delivery(job['id'],'bale','sent','55');assert not db.ingest(1,'متن خوب',entities=[{'type':'bold','start':0,'end':3}]);assert not db.next_delivery('bale')

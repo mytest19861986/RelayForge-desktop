@@ -13,7 +13,7 @@ import uvicorn
 from relayforge.database import Database, PLATFORMS
 from relayforge.engine import Engine
 from relayforge.source import SourceUnavailable
-from relayforge import richtext, ai43
+from relayforge import richtext, ai43, gemini431
 from relayforge.gateways import check_target, send, Post, Rejected, Uncertain, RetryLater, discover_rubika
 
 APP_NAME="RelayForge"
@@ -138,10 +138,26 @@ class AIProfile(BaseModel):
 
 class AIPreview(BaseModel):
     model_config=ConfigDict(extra="forbid")
-    provider:Literal["local","openai"]="local"
+    provider:Literal["local","openai","gemini"]="local"
     text:str=Field(min_length=1,max_length=6000)
     profile:AIProfile
     model:str="gpt-4o-mini"
+    consent:bool=False
+
+class GeminiScript(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    text:str=Field(min_length=1,max_length=4000)
+    model:str="gemini-3.8-flash"
+    consent:bool=False
+
+class GeminiSpeech(BaseModel):
+    model_config=ConfigDict(extra="forbid")
+    text:str=Field(min_length=1,max_length=6000)
+    model:str="gemini-3.8-flash-tts"
+    mode:Literal["narration","podcast"]="narration"
+    voice:str="Kore"
+    voice2:str="Puck"
+    style:str="neutral"
     consent:bool=False
 
 class SplusLogin(BaseModel):
@@ -224,7 +240,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
                 task.cancel();await asyncio.gather(task,return_exceptions=True)
             await service.engine.stop()
 
-    app=FastAPI(title="RelayForge Control API",version="4.3.0",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
+    app=FastAPI(title="RelayForge Control API",version="4.3.1",docs_url=None,redoc_url=None,openapi_url=None,lifespan=lifespan)
     app.state.service=service
 
     @app.middleware("http")
@@ -248,7 +264,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         result.headers.update({
             "X-Content-Type-Options":"nosniff", "X-Frame-Options":"DENY",
             "Referrer-Policy":"no-referrer", "Cache-Control":"no-store",
-            "Content-Security-Policy":"default-src 'self'; connect-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'",
+            "Content-Security-Policy":"default-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self' blob:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; form-action 'self'",
         })
         return result
 
@@ -278,7 +294,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.get('/api/richtext',dependencies=[Depends(auth)])
     async def rich_config():
-        return {'modes':{**richtext.DEFAULTS,**(service.db.get_setting('rich43_modes') or {})},'available':richtext.MODES}
+        return {'modes':{**richtext.DEFAULTS,**(service.db.get_setting('rich43_modes') or {})},'available':richtext.MODES,'recommended':richtext.RECOMMENDED}
 
     @app.post('/api/richtext',dependencies=[Depends(auth)])
     async def rich_save(data:RichModes):
@@ -301,7 +317,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
             try:
                 d=service.db.target(platform);p=d['provider'];mode=data.mode or (service.db.get_setting('rich43_modes') or {}).get(p,richtext.DEFAULTS[p])
                 if mode not in richtext.MODES[p]:raise ValueError('حالت قالب نامعتبر')
-                text='آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب'
+                text='🔥 آزمایش قالب‌بندی RelayForge\nمتن پررنگ و متن مورب\n#برنامه_نویسی'
                 spans=tuple({'type':k,'start':text.index(v),'end':text.index(v)+len(v)} for k,v in [('bold','متن پررنگ'),('italic','متن مورب')])
                 post=Post(text,entities=spans,format_mode=mode)
                 remote=await service.engine.splus.send(platform,d['chat_id'],post) if p=='soroush' and d['token']==marker(platform) else await send(p,d['token'],d['chat_id'],post)
@@ -311,7 +327,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
 
     @app.get('/api/ai-lab',dependencies=[Depends(auth)])
     async def ai_config():
-        return {'enabled':bool(service.db.get_setting('ai43_enabled')),'key_available':bool(os.environ.get('RELAYFORGE_AI_API_KEY')),'profiles':service.db.get_setting('ai43_profiles') or {},'usage':service.db.get_setting('ai43_usage') or {},'prompt_version':ai43.PROMPT_VERSION}
+        return {'enabled':bool(service.db.get_setting('ai43_enabled')),'key_available':bool(os.environ.get('RELAYFORGE_AI_API_KEY')),'gemini_key_available':bool(os.environ.get('RELAYFORGE_GEMINI_API_KEY') or os.environ.get('GEMINI_API_KEY')),'gemini_models':gemini431.TEXT_MODELS,'tts_models':gemini431.TTS_MODELS,'voices':gemini431.VOICES,'profiles':service.db.get_setting('ai43_profiles') or {},'usage':service.db.get_setting('ai43_usage') or {},'prompt_version':ai43.PROMPT_VERSION}
 
     @app.post('/api/ai-lab/enable',dependencies=[Depends(auth)])
     async def ai_enable(data:AIEnable):
@@ -338,6 +354,18 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
     async def ai_preview(data:AIPreview):
         if any(not x.strip() or len(x)>200 for x in data.profile.locked):raise HTTPException(422,'عبارت محافظت‌شده نامعتبر')
         try:return await ai43.preview(service.db,data.text,data.profile.model_dump(),data.provider,data.consent,data.model)
+        except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/ai-lab/podcast-script',dependencies=[Depends(auth)])
+    async def podcast_script(data:GeminiScript):
+        try:return await asyncio.wait_for(gemini431.podcast_script(service.db,data.text,data.consent,data.model),timeout=90)
+        except TimeoutError:raise HTTPException(400,'زمان ساخت متن پادکست پایان یافت؛ درخواست تکرار نمی‌شود') from None
+        except Exception as exc:raise safe_exception(exc) from None
+
+    @app.post('/api/ai-lab/speech',dependencies=[Depends(auth)])
+    async def ai_speech(data:GeminiSpeech):
+        try:return await asyncio.wait_for(gemini431.speech(service.db,**data.model_dump()),timeout=240)
+        except TimeoutError:raise HTTPException(400,'زمان ساخت صوت پایان یافت؛ درخواست تکرار نمی‌شود') from None
         except Exception as exc:raise safe_exception(exc) from None
 
     @app.get("/api/status",dependencies=[Depends(auth)])
@@ -607,7 +635,7 @@ def create_app(data_root:Path|None=None, start_workers=True, port=PORT) -> FastA
         return {"ok":True}
 
     @app.get("/api/health")
-    async def health():return {"status":"running","version":"4.3.0"}
+    async def health():return {"status":"running","version":"4.3.1"}
 
     return app
 
@@ -634,16 +662,16 @@ def main():
         with tempfile.TemporaryDirectory() as tmp:
             app=create_app(Path(tmp),start_workers=False,port=opt.port)
             assert (web_root()/"index.html").is_file() and len(app.state.service.db.targets())==5
-        print("SELF TEST OK 4.3.0"); return
+        print("SELF TEST OK 4.3.1"); return
     if not 1024<=opt.port<=65535:parser.error("port out of range")
     data=opt.data_dir or runtime_root()/"data"
     def run(stop=None):
         with FileLock(data/"instance.lock"):
             backups.apply_pending(data)
-            backups.pre_upgrade(data,"4.3.0")
+            backups.pre_upgrade(data,"4.3.1")
             setup_logging(data)
             app=create_app(data,port=opt.port)
-            backups.mark_version(data,"4.3.0")
+            backups.mark_version(data,"4.3.1")
             print(f"RelayForge 4.3 | http://127.0.0.1:{opt.port}",flush=True)
             print("Dashboard password file:",data/"dashboard-key.txt",flush=True)
             import threading

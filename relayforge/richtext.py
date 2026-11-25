@@ -7,8 +7,9 @@ from urllib.parse import urlsplit
 
 KINDS = {'bold','italic','underline','strikethrough','code','pre','text_link','blockquote','spoiler'}
 TELETHON = {'MessageEntityBold':'bold','MessageEntityItalic':'italic','MessageEntityUnderline':'underline','MessageEntityStrike':'strikethrough','MessageEntityCode':'code','MessageEntityPre':'pre','MessageEntityTextUrl':'text_link','MessageEntityBlockquote':'blockquote','MessageEntitySpoiler':'spoiler'}
-MODES = {'telegram':('native','plain'),'bale':('markdown','plain'),'eitaa':('plain','markdown','html'),'rubika':('plain','metadata'),'soroush':('plain',)}
+MODES = {'telegram':('native','plain'),'bale':('markdown','markdown_double','plain'),'eitaa':('plain','markdown_raw','markdown_double','markdown','html'),'rubika':('plain','metadata','metadata_codepoint'),'soroush':('plain',)}
 DEFAULTS = {'telegram':'native','bale':'markdown','eitaa':'plain','rubika':'plain','soroush':'plain'}
+RECOMMENDED = {**DEFAULTS,'eitaa':'markdown_raw','rubika':'metadata'}
 
 def boundaries(text):
     out=[0]
@@ -66,28 +67,53 @@ def render(platform,text,spans,mode=None,caption=False):
     if not spans:return text,{},warnings
     if mode not in MODES.get(platform,('plain',)):mode='plain'
     if mode=='native':return text,{'caption_entities' if caption else 'entities':wire(text,spans)},warnings
-    if mode=='metadata':
-        # Index semantics for astral characters have not been verified against live Rubika.
-        if any(ord(c)>0xffff for c in text):return text,{},['روبیکا: اندیس ایموجی هنوز تأیید نشده؛ متن ساده']
-        types={'bold':'Bold','italic':'Italic','underline':'Underline','strikethrough':'Strike'}
-        parts=[{'type':types[s['type']],'from_index':s['start'],'length':s['end']-s['start']} for s in spans if s['type'] in types]
+    if mode in ('metadata','metadata_codepoint'):
+        types={'bold':'Bold','italic':'Italic','underline':'Underline','strikethrough':'Strike','code':'Mono','pre':'Pre'}
+        b=boundaries(text) if mode=='metadata' else list(range(len(text)+1))
+        # Prioritize bold if the API's metadata count limit is reached.
+        supported=sorted((s for s in spans if s['type'] in types),key=lambda s:(s['type']!='bold',s['start'],s['end']))[:30]
+        parts=[{'type':types[s['type']],'from_index':b[s['start']],'length':b[s['end']]-b[s['start']]} for s in supported]
         if len(parts)!=len(spans):warnings.append('بعضی قالب‌ها در روبیکا به متن ساده تبدیل شدند')
         return text,{'metadata':{'meta_data_parts':parts}} if parts else {},warnings
-    if mode in ('markdown','html'):
-        # Conservative renderer: non-overlapping bold/italic only; avoid corrupting original punctuation.
+    if mode in ('markdown','markdown_raw','markdown_double','html'):
         import html
-        tags={'bold':('*','*'),'italic':('_','_')} if mode=='markdown' else {'bold':('<b>','</b>'),'italic':('<i>','</i>'),'underline':('<u>','</u>'),'strikethrough':('<s>','</s>'),'code':('<code>','</code>')}
-        if mode=='markdown' and re.search(r'[*_`\\\[\]]',text):return text,{},['نشانه‌های Markdown در متن اصلی؛ برای جلوگیری از تغییر محتوا، متن ساده ارسال شد']
-        supported=[s for s in spans if s['type'] in tags];parts=[];last=0
+        if mode=='html':
+            tags={'bold':('<b>','</b>'),'italic':('<i>','</i>'),'underline':('<u>','</u>'),'strikethrough':('<s>','</s>'),'code':('<code>','</code>')}
+        else:
+            tags={'bold':('**','**'),'italic':('__','__')} if mode=='markdown_double' else {'bold':('*','*'),'italic':('_','_')}
         esc=html.escape if mode=='html' else lambda t:t
-        for s in supported:
-            if s['start']<last or '\n' in text[s['start']:s['end']] and mode=='markdown':continue
-            if mode=='markdown' and text[s['start']:s['end']].strip()!=text[s['start']:s['end']]:continue
-            a,z=tags[s['type']];parts.extend([esc(text[last:s['start']]),a,esc(text[s['start']:s['end']]),z]);last=s['end']
-        if not parts:return text,{},['قالب پشتیبانی نشده؛ متن ساده']
+        # Format independent runs: an underscore in a hashtag must not disable a bold heading.
+        # Bold wins overlaps; split each line and keep surrounding whitespace outside markers.
+        selected=[]; occupied=set(); dropped=False
+        for span in sorted(spans,key=lambda a:(a['type']!='bold',a['start'],-a['end'])):
+            k=span['type']
+            if k not in tags:dropped=True;continue
+            a,z=span['start'],span['end']
+            if mode=='html':
+                candidates=[(a,z)]
+            else:
+                candidates=[]
+                for match in re.finditer(r'[^\n\r]+',text[a:z]):
+                    x,y=a+match.start(),a+match.end()
+                    while x<y and text[x].isspace():x+=1
+                    while y>x and text[y-1].isspace():y-=1
+                    if x<y:candidates.append((x,y))
+            for x,y in candidates:
+                # Do not generate ambiguous markers within a span; preserve the original characters.
+                if mode!='html' and (tags[k][0][0] in text[x:y] or '\\' in text[x:y]):dropped=True;continue
+                if any(i in occupied for i in range(x,y)):dropped=True;continue
+                occupied.update(range(x,y));selected.append((x,y,k))
+        if not selected:return text,{},['قالب پشتیبانی نشده؛ متن ساده']
+        parts=[];last=0
+        for x,y,k in sorted(selected):
+            parts.append(esc(text[last:x]));a,z=tags[k]
+            # Bale parser requires separation around delimiters. Insert only at non-whitespace boundaries.
+            before=' ' if platform=='bale' and x>0 and not text[x-1].isspace() else ''
+            after=' ' if platform=='bale' and y<len(text) and not text[y].isspace() else ''
+            parts.extend([before,a,esc(text[x:y]),z,after]);last=y
         parts.append(esc(text[last:]));out=''.join(parts)
         if len(out)>(950 if caption else 4000):return text,{},['قالب‌بندی از سقف طول عبور کرد؛ متن ساده']
-        if len(parts)//4!=len(spans):warnings.append('بعضی قالب‌های تودرتو یا پشتیبانی‌نشده حذف شدند')
-        # Bale Markdown is normally auto-detected; Eitaa parse_mode is experimental.
-        return out,({'parse_mode':'HTML' if mode=='html' else 'Markdown'} if platform=='eitaa' else {}),warnings
+        if dropped:warnings.append('بعضی قالب‌های تودرتو یا پشتیبانی‌نشده حذف شدند')
+        if mode!='html' and re.search(r'[*_`]',text):warnings.append('نشانه‌های اصلی Markdown حفظ شدند؛ نمایش آن‌ها در مقصد را بررسی کنید')
+        return out,({'parse_mode':'HTML' if mode=='html' else 'Markdown'} if platform=='eitaa' and mode in ('html','markdown') else {}),warnings
     return text,{},['قالب‌بندی در حالت متن ساده حفظ نمی‌شود']
